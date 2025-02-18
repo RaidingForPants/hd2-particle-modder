@@ -170,7 +170,7 @@ class ColorGradientModel(QStandardItemModel):
             self.gradients.append(gradient)
             arr = []
             for i in range(10):
-                timeData = struct.unpack("<f", gradient.colors[i][0])
+                timeData = struct.unpack("<f", gradient.colors[i][0])[0]
                 timeItem = QStandardItem(str(timeData))
                 if i == 0:
                     timeItem.setData(gradient)
@@ -198,7 +198,7 @@ class ColorGradientModel(QStandardItemModel):
         if index.column() % 2 == 1:
             gradient.colors[i][1] = struct.pack("<fff", *data)
         else:
-            gradient.colors[i][1] = struct.pack("<f", *data)
+            gradient.colors[i][0] = struct.pack("<f", data)
         
         return super().setData(index, value, role)
 		
