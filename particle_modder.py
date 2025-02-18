@@ -111,6 +111,43 @@ class MemoryStream:
     def uint64_read(self):
         return self.read_format('Q', 8)
         
+class OpacityGradient:
+    
+    def __init__(self):
+        self.fileOffset = 0
+        self.opacities = []
+        
+    @classmethod
+    def fromBytes(cls, data):
+        g = OpacityGradient()
+        for n in range(10):
+            g.opacities.append([data[n*4:(n+1)*4], data[40+n*4:40+(n+1)*4]])
+        return g
+            
+    def setOffset(self, offset):
+        self.fileOffset = offset
+        
+    def getOffset(self):
+        return self.fileOffset
+        
+class Size:
+    
+    def __init__(self):
+        self.fileOffset = 0
+        self.sizes = []
+        
+    @classmethod
+    def fromBytes(cls, data):
+        g = Size()
+        for n in range(10):
+            g.sizes.append([data[n*4:(n+1)*4], data[40+n*4:40+(n+1)*4]])
+        return g
+            
+    def setOffset(self, offset):
+        self.fileOffset = offset
+        
+    def getOffset(self):
+        return self.fileOffset
 
 class ColorGradient:
     
@@ -131,12 +168,6 @@ class ColorGradient:
     def getOffset(self):
         return self.fileOffset
         
-    def setTimeData(self, index, data):
-        pass
-    
-    def setColorData(self, index, data):
-        pass
-        
 def find_all_occurrences(text, substring):
     indices = []
     start_index = 0
@@ -147,6 +178,152 @@ def find_all_occurrences(text, substring):
         indices.append(index)
         start_index = index + 1
     return indices
+    
+class SizeModel(QStandardItemModel):
+    
+    def __init__(self):
+        super().__init__()
+        self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
+        self.sizes = []
+
+    def setFileData(self, fileData):
+        self.clear()
+        self.sizes.clear()
+        self.file = MemoryStream()
+        self.file.write(fileData)
+        self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
+        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008000000"))]
+        root = self.invisibleRootItem()
+        for offset in offsets:
+            size = Size.fromBytes(fileData[offset:offset+80])
+            size.setOffset(offset)
+            self.sizes.append(size)
+            arr = []
+            for i in range(10):
+                timeData = struct.unpack("<f", size.sizes[i][0])[0]
+                timeItem = QStandardItem(str(timeData))
+                if i == 0:
+                    timeItem.setData(size)
+                sizeData = struct.unpack('<f', size.sizes[i][1])[0]
+                sizeItem = QStandardItem(str(sizeData))
+                arr.append(timeItem)
+                arr.append(sizeItem)
+            root.appendRow(arr)
+            
+    def writeFileData(self, outFile):
+        for size in self.sizes:
+            offset = size.getOffset()
+            outFile.seek(offset)
+            for index, s in enumerate(size.sizes):
+                outFile.seek(offset + index*4)
+                outFile.write(s[0])
+                outFile.seek(offset + 40 + index*4)
+                outFile.write(s[1])
+                
+                outFile.seek(offset - 80 + index*4)
+                outFile.write(s[0])
+                outFile.seek(offset - 40 + index*4)
+                outFile.write(s[1])
+
+    def setData(self, index, value, role=Qt.EditRole):
+        size = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        i = int(index.column()/2)
+        data = ast.literal_eval(value)
+        if index.column() % 2 == 1:
+            size.sizes[i][1] = struct.pack("<f", data)
+        else:
+            size.sizes[i][0] = struct.pack("<f", data)
+        
+        return super().setData(index, value, role)
+
+class LifetimeModel(QStandardItemModel):
+    
+    def __init__(self):
+        super().__init__()
+        self.setHorizontalHeaderLabels(["Min", "Max"])
+        self.lifetime = [0, 0]
+
+    def setFileData(self, fileData):
+        self.clear()
+        self.lifetime[0] = struct.unpack("<f", fileData[4:8])[0]
+        self.lifetime[1] = struct.unpack("<f", fileData[8:12])[0]
+        self.setHorizontalHeaderLabels(["Min", "Max"])
+        root = self.invisibleRootItem()
+        minItem = QStandardItem(str(self.lifetime[0]))
+        maxItem = QStandardItem(str(self.lifetime[1]))
+        root.appendRow([minItem, maxItem])
+            
+    def writeFileData(self, outFile):
+        outFile.seek(4)
+        outFile.write(struct.pack("<ff", *self.lifetime))
+
+    def setData(self, index, value, role=Qt.EditRole):
+        i = int(index.column()/2)
+        data = float(ast.literal_eval(value))
+        if index.column() % 2 == 1:
+            self.lifetime[1] = data
+        else:
+            self.lifetime[0] = data
+        
+        return super().setData(index, value, role)
+    
+class OpacityGradientModel(QStandardItemModel):
+    
+    def __init__(self):
+        super().__init__()
+        self.file = MemoryStream()
+        self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
+        self.gradients = []
+
+    def setFileData(self, fileData):
+        self.clear()
+        self.gradients.clear()
+        self.file = MemoryStream()
+        self.file.write(fileData)
+        self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
+        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008000000"))]
+        root = self.invisibleRootItem()
+        for offset in offsets:
+            gradient = OpacityGradient.fromBytes(fileData[offset:offset+80])
+            gradient.setOffset(offset)
+            self.gradients.append(gradient)
+            arr = []
+            for i in range(10):
+                timeData = struct.unpack("<f", gradient.opacities[i][0])[0]
+                timeItem = QStandardItem(str(timeData))
+                if i == 0:
+                    timeItem.setData(gradient)
+                opacityData = struct.unpack('<f', gradient.opacities[i][1])[0]
+                opacityItem = QStandardItem(str(opacityData))
+                arr.append(timeItem)
+                arr.append(opacityItem)
+            root.appendRow(arr)
+            
+    def writeFileData(self, outFile):
+        for gradient in self.gradients:
+            offset = gradient.getOffset()
+            outFile.seek(offset)
+            for index, opacity in enumerate(gradient.opacities):
+                outFile.seek(offset + index*4)
+                outFile.write(opacity[0])
+                outFile.seek(offset + 40 + index*4)
+                outFile.write(opacity[1])
+                
+                outFile.seek(offset - 80 + index*4)
+                outFile.write(opacity[0])
+                outFile.seek(offset - 40 + index*4)
+                outFile.write(opacity[1])
+
+    def setData(self, index, value, role=Qt.EditRole):
+        gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        i = int(index.column()/2)
+        data = ast.literal_eval(value)
+        if index.column() % 2 == 1:
+            gradient.opacities[i][1] = struct.pack("<f", data)
+        else:
+            gradient.opacities[i][0] = struct.pack("<f", data)
+        
+        return super().setData(index, value, role)
     
 class ColorGradientModel(QStandardItemModel):
     
@@ -183,13 +360,12 @@ class ColorGradientModel(QStandardItemModel):
     def writeFileData(self, outFile):
         for gradient in self.gradients:
             offset = gradient.getOffset()
-            self.file.seek(offset)
+            outFile.seek(offset)
             for index, color in enumerate(gradient.colors):
-                self.file.seek(offset + index*4)
-                self.file.write(color[0])
-                self.file.seek(40 + offset + index*12)
-                self.file.write(color[1])
-        outFile.write(self.file.data)
+                outFile.seek(offset + index*4)
+                outFile.write(color[0])
+                outFile.seek(40 + offset + index*12)
+                outFile.write(color[1])
 
     def setData(self, index, value, role=Qt.EditRole):
         gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
@@ -201,6 +377,11 @@ class ColorGradientModel(QStandardItemModel):
             gradient.colors[i][0] = struct.pack("<f", data)
         
         return super().setData(index, value, role)
+        
+class OpacityTable(QTableView):
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
 		
 class ColorTable(QTableView):
     
@@ -250,7 +431,11 @@ class MainWindow(QMainWindow):
         
     def initComponents(self):
         self.initMenuBar()
-        self.initTableView()
+        self.initColorView()
+        self.initOpacityView()
+        self.initLifetimeView()
+        self.initSizeView()
+        self.initTabWidget()
         
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
@@ -262,18 +447,58 @@ class MainWindow(QMainWindow):
         self.layout = QVBoxLayout()
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.tableView)
+        self.splitter.addWidget(self.colorView)
         
-        self.layout.addWidget(self.splitter)
+        self.layout.addWidget(self.tabWidget)
+        
+        layout = QVBoxLayout()
+        layout.addWidget(self.colorView)
+        self.colorTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.opacityView)
+        self.opacityTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.lifetimeView)
+        self.lifetimeTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.sizeView)
+        self.sizeTab.setLayout(layout)
+        
+        self.tabWidget.addTab(self.colorTab, "Color")
+        self.tabWidget.addTab(self.opacityTab, "Opacity")
+        self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
+        self.tabWidget.addTab(self.sizeTab, "Size Scale")
         
         widget = QWidget()
         widget.setLayout(self.layout)
         self.setCentralWidget(widget)
         
-    def initTableView(self):
-        self.tableView = ColorTable(self)
-        self.tableViewModel = ColorGradientModel()
-        self.tableView.setModel(self.tableViewModel)
+    def initColorView(self):
+        self.colorView = ColorTable(self)
+        self.colorViewModel = ColorGradientModel()
+        self.colorView.setModel(self.colorViewModel)
+        
+    def initOpacityView(self):
+        self.opacityView = OpacityTable(self)
+        self.opacityViewModel = OpacityGradientModel()
+        self.opacityView.setModel(self.opacityViewModel)
+        
+    def initLifetimeView(self):
+        self.lifetimeView = QTableView(self)
+        self.lifetimeViewModel = LifetimeModel()
+        self.lifetimeView.setModel(self.lifetimeViewModel)
+        
+    def initSizeView(self):
+        self.sizeView = QTableView(self)
+        self.sizeViewModel = SizeModel()
+        self.sizeView.setModel(self.sizeViewModel)
+        
+    def initTabWidget(self):
+        self.tabWidget = QTabWidget(self)
+        self.colorTab = QWidget(self.tabWidget)
+        self.opacityTab = QWidget(self.tabWidget)
+        self.lifetimeTab = QWidget(self.tabWidget)
+        self.sizeTab = QWidget(self.tabWidget)
         
     def initMenuBar(self):
         menu_bar = self.menuBar()
@@ -294,7 +519,11 @@ class MainWindow(QMainWindow):
             return
         self.name = archive_file
         with open(archive_file, "rb") as f:
-            self.tableViewModel.setFileData(f.read())
+            self.data = f.read()
+            self.colorViewModel.setFileData(self.data)
+            self.opacityViewModel.setFileData(self.data)
+            self.lifetimeViewModel.setFileData(self.data)
+            self.sizeViewModel.setFileData(self.data)
             
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
@@ -303,7 +532,13 @@ class MainWindow(QMainWindow):
         if not archive_file:
             return
         with open(archive_file, "wb") as f:
-            self.tableViewModel.writeFileData(f)
+            data = MemoryStream()
+            data.write(self.data)
+            self.colorViewModel.writeFileData(data)
+            self.lifetimeViewModel.writeFileData(data)
+            self.opacityViewModel.writeFileData(data)
+            self.sizeViewModel.writeFileData(data)
+            f.write(data.data)
         
 def get_dark_mode_palette( app=None ):
     
