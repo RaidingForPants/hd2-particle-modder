@@ -148,6 +148,26 @@ class Size:
         
     def getOffset(self):
         return self.fileOffset
+        
+class EmitterPosition:
+    
+    def __init__(self):
+        self.fileOffset = 0
+        self.position = [0, 0, 0]
+        
+    @classmethod
+    def fromBytes(cls, data):
+        g = EmitterPosition()
+        g.position = [data[0:4], data[4:8], data[8:12]]
+        return g
+            
+    def setOffset(self, offset):
+        self.fileOffset = offset
+        
+    def getOffset(self):
+        return self.fileOffset
+        
+        
 
 class ColorGradient:
     
@@ -265,6 +285,44 @@ class LifetimeModel(QStandardItemModel):
         else:
             self.lifetime[0] = data
         
+        return super().setData(index, value, role)
+        
+class PositionModel(QStandardItemModel):
+    
+    def __init__(self):
+        super().__init__()
+        self.setHorizontalHeaderLabels(["x offset", "y offset", "z offset"])
+        self.positions = []
+        
+    def setFileData(self, fileData):
+        self.clear()
+        self.setHorizontalHeaderLabels(["x offset", "y offset", "z offset"])
+        offsets = [x+84 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFFFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF030576F2030576F200000000"))]
+        root = self.invisibleRootItem()
+        for offset in offsets:
+            position = EmitterPosition.fromBytes(fileData[offset:offset+12])
+            position.setOffset(offset)
+            self.positions.append(position)
+            xData = struct.unpack("<f", position.position[0])[0]
+            yData = struct.unpack("<f", position.position[1])[0]
+            zData = struct.unpack("<f", position.position[2])[0]
+            xItem = QStandardItem(str(xData))
+            xItem.setData(position)
+            yItem = QStandardItem(str(yData))
+            zItem = QStandardItem(str(zData))
+            root.appendRow([xItem, yItem, zItem])
+            
+    def writeFileData(self, outFile):
+        for position in self.positions:
+            outFile.seek(position.getOffset())
+            outFile.write(position.position[0])
+            outFile.write(position.position[1])
+            outFile.write(position.position[2])
+            
+    def setData(self, index, value, role=Qt.EditRole):
+        position = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        data = ast.literal_eval(value)
+        position.position[index.column()] = struct.pack("<f", data)
         return super().setData(index, value, role)
     
 class OpacityGradientModel(QStandardItemModel):
@@ -435,6 +493,7 @@ class MainWindow(QMainWindow):
         self.initOpacityView()
         self.initLifetimeView()
         self.initSizeView()
+        self.initPositionView()
         self.initTabWidget()
         
     def connectComponents(self):
@@ -463,11 +522,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.sizeView)
         self.sizeTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.positionView)
+        self.positionTab.setLayout(layout)
         
         self.tabWidget.addTab(self.colorTab, "Color")
         self.tabWidget.addTab(self.opacityTab, "Opacity")
         self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
         self.tabWidget.addTab(self.sizeTab, "Size Scale")
+        self.tabWidget.addTab(self.positionTab, "Emitter Offset")
         
         widget = QWidget()
         widget.setLayout(self.layout)
@@ -493,20 +556,26 @@ class MainWindow(QMainWindow):
         self.sizeViewModel = SizeModel()
         self.sizeView.setModel(self.sizeViewModel)
         
+    def initPositionView(self):
+        self.positionView = QTableView(self)
+        self.positionViewModel = PositionModel()
+        self.positionView.setModel(self.positionViewModel)
+        
     def initTabWidget(self):
         self.tabWidget = QTabWidget(self)
         self.colorTab = QWidget(self.tabWidget)
         self.opacityTab = QWidget(self.tabWidget)
         self.lifetimeTab = QWidget(self.tabWidget)
         self.sizeTab = QWidget(self.tabWidget)
+        self.positionTab = QWidget(self.tabWidget)
         
     def initMenuBar(self):
         menu_bar = self.menuBar()
         
         self.file_menu = menu_bar.addMenu("File")
         
-        self.fileOpenArchiveAction = QAction("Open Archive", self)
-        self.fileSaveArchiveAction = QAction("Save Archive", self)
+        self.fileOpenArchiveAction = QAction("Open", self)
+        self.fileSaveArchiveAction = QAction("Save", self)
         
         self.file_menu.addAction(self.fileOpenArchiveAction)
         self.file_menu.addAction(self.fileSaveArchiveAction)
@@ -524,6 +593,7 @@ class MainWindow(QMainWindow):
             self.opacityViewModel.setFileData(self.data)
             self.lifetimeViewModel.setFileData(self.data)
             self.sizeViewModel.setFileData(self.data)
+            self.positionViewModel.setFileData(self.data)
             
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
@@ -538,6 +608,7 @@ class MainWindow(QMainWindow):
             self.lifetimeViewModel.writeFileData(data)
             self.opacityViewModel.writeFileData(data)
             self.sizeViewModel.writeFileData(data)
+            self.positionViewModel.writeFileData(data)
             f.write(data.data)
         
 def get_dark_mode_palette( app=None ):
