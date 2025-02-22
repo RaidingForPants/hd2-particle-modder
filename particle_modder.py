@@ -4,6 +4,7 @@ import os
 from math import ceil
 from itertools import takewhile
 import ast
+from scipy.spatial.transform import Rotation
 
 from PySide6.QtCore import QSize, Qt, Signal, QMargins, QSortFilterProxyModel, QItemSelection, QItemSelectionModel
 from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QMenu, QHBoxLayout, QVBoxLayout, QAbstractItemView, QSizePolicy, QWidget, QSplitter, QListView, QPushButton, QSpacerItem, QFileDialog, QLabel, QTabWidget, QColorDialog, QTableView
@@ -167,6 +168,34 @@ class EmitterPosition:
     def getOffset(self):
         return self.fileOffset
         
+class EmitterRotation:
+    
+    def __init__(self):
+        self.fileOffset = 0
+        self.rotation = None
+        
+    @classmethod
+    def fromBytes(cls, data):
+        g = EmitterRotation()
+        g.rotation = Rotation.from_matrix([
+            list(struct.unpack("<fff", data[0:12])),
+            list(struct.unpack("<fff", data[16:28])),
+            list(struct.unpack("<fff", data[32:44]))
+        ])
+        return g
+        
+    def getRotationMatrix(self):
+        return self.rotation.as_matrix()
+        
+    def getQuaternion(self):
+        return self.rotation.as_quat()
+        
+    def setOffset(self, offset):
+        self.fileOffset = offset
+        
+    def getOffset(self):
+        return self.fileOffset
+        
         
 
 class ColorGradient:
@@ -209,10 +238,8 @@ class SizeModel(QStandardItemModel):
     def setFileData(self, fileData):
         self.clear()
         self.sizes.clear()
-        self.file = MemoryStream()
-        self.file.write(fileData)
         self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
-        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008000000"))]
+        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
         root = self.invisibleRootItem()
         for offset in offsets:
             size = Size.fromBytes(fileData[offset:offset+80])
@@ -287,6 +314,49 @@ class LifetimeModel(QStandardItemModel):
         
         return super().setData(index, value, role)
         
+class RotationModel(QStandardItemModel):
+    
+    def __init__(self):
+        super().__init__()
+        self.setHorizontalHeaderLabels(["x axis", "y axis", "z axis"])
+        self.rotations = []
+        
+    def setFileData(self, fileData):
+        self.clear()
+        self.rotations.clear()
+        self.setHorizontalHeaderLabels(["x axis", "y axis", "z axis"])
+        offsets = [x+36 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFFFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF030576F2030576F200000000"))]
+        root = self.invisibleRootItem()
+        for offset in offsets:
+            rotation = EmitterRotation.fromBytes(fileData[offset:offset+48])
+            rotation.setOffset(offset)
+            self.rotations.append(rotation)
+            eulerAngles = rotation.rotation.as_euler('xyz', degrees=True)
+            xData, yData, zData = eulerAngles
+            xItem = QStandardItem(str(xData))
+            xItem.setData(rotation)
+            yItem = QStandardItem(str(yData))
+            zItem = QStandardItem(str(zData))
+            root.appendRow([xItem, yItem, zItem])
+            
+    def writeFileData(self, outFile):
+        for rotation in self.rotations:
+            rotationMatrix = rotation.getRotationMatrix()
+            quaternion = rotation.getQuaternion()
+            outFile.seek(rotation.getOffset())
+            for index, row in enumerate(rotationMatrix):
+                for data in row:
+                    outFile.write(struct.pack("<f", data))
+                outFile.write(struct.pack("<f", quaternion[index]))
+                
+    def setData(self, index, value, role=Qt.EditRole):
+        rotation = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        data = ast.literal_eval(value)
+        euler = rotation.rotation.as_euler('xyz', degrees=True)
+        euler[index.column()] = data
+        rotation.rotation = Rotation.from_euler('xyz', euler, degrees=True)
+        return super().setData(index, value, role)
+        
 class PositionModel(QStandardItemModel):
     
     def __init__(self):
@@ -296,6 +366,7 @@ class PositionModel(QStandardItemModel):
         
     def setFileData(self, fileData):
         self.clear()
+        self.positions.clear()
         self.setHorizontalHeaderLabels(["x offset", "y offset", "z offset"])
         offsets = [x+84 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFFFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF030576F2030576F200000000"))]
         root = self.invisibleRootItem()
@@ -339,7 +410,7 @@ class OpacityGradientModel(QStandardItemModel):
         self.file = MemoryStream()
         self.file.write(fileData)
         self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
-        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008000000"))]
+        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
         root = self.invisibleRootItem()
         for offset in offsets:
             gradient = OpacityGradient.fromBytes(fileData[offset:offset+80])
@@ -397,7 +468,7 @@ class ColorGradientModel(QStandardItemModel):
         self.file = MemoryStream()
         self.file.write(fileData)
         self.setHorizontalHeaderLabels(["Time 1", "Color 1", "Time 2", "Color 2", "Time 3", "Color 3", "Time 4", "Color 4", "Time 5", "Color 5", "Time 6", "Color 6", "Time 7", "Color 7", "Time 8", "Color 8", "Time 9", "Color 9", "Time 10", "Color 10"])
-        offsets = [x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008000000"))]
+        offsets = [x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
         root = self.invisibleRootItem()
         for offset in offsets:
             gradient = ColorGradient.fromBytes(fileData[offset:offset+160])
@@ -494,6 +565,7 @@ class MainWindow(QMainWindow):
         self.initLifetimeView()
         self.initSizeView()
         self.initPositionView()
+        self.initRotationView()
         self.initTabWidget()
         
     def connectComponents(self):
@@ -525,12 +597,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.positionView)
         self.positionTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.rotationView)
+        self.rotationTab.setLayout(layout)
         
         self.tabWidget.addTab(self.colorTab, "Color")
         self.tabWidget.addTab(self.opacityTab, "Opacity")
         self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
         self.tabWidget.addTab(self.sizeTab, "Size Scale")
         self.tabWidget.addTab(self.positionTab, "Emitter Offset")
+        self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
         
         widget = QWidget()
         widget.setLayout(self.layout)
@@ -561,6 +637,11 @@ class MainWindow(QMainWindow):
         self.positionViewModel = PositionModel()
         self.positionView.setModel(self.positionViewModel)
         
+    def initRotationView(self):
+        self.rotationView = QTableView(self)
+        self.rotationViewModel = RotationModel()
+        self.rotationView.setModel(self.rotationViewModel)
+        
     def initTabWidget(self):
         self.tabWidget = QTabWidget(self)
         self.colorTab = QWidget(self.tabWidget)
@@ -568,6 +649,7 @@ class MainWindow(QMainWindow):
         self.lifetimeTab = QWidget(self.tabWidget)
         self.sizeTab = QWidget(self.tabWidget)
         self.positionTab = QWidget(self.tabWidget)
+        self.rotationTab = QWidget(self.tabWidget)
         
     def initMenuBar(self):
         menu_bar = self.menuBar()
@@ -594,6 +676,7 @@ class MainWindow(QMainWindow):
             self.lifetimeViewModel.setFileData(self.data)
             self.sizeViewModel.setFileData(self.data)
             self.positionViewModel.setFileData(self.data)
+            self.rotationViewModel.setFileData(self.data)
             
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
@@ -609,6 +692,7 @@ class MainWindow(QMainWindow):
             self.opacityViewModel.writeFileData(data)
             self.sizeViewModel.writeFileData(data)
             self.positionViewModel.writeFileData(data)
+            self.rotationViewModel.writeFileData(data)
             f.write(data.data)
         
 def get_dark_mode_palette( app=None ):
