@@ -239,7 +239,8 @@ class SizeModel(QStandardItemModel):
         self.clear()
         self.sizes.clear()
         self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
-        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
+        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
+        offsets.extend([x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
         root = self.invisibleRootItem()
         for offset in offsets:
             size = Size.fromBytes(fileData[offset:offset+80])
@@ -410,7 +411,8 @@ class OpacityGradientModel(QStandardItemModel):
         self.file = MemoryStream()
         self.file.write(fileData)
         self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
-        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
+        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
+        offsets.extend([x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
         root = self.invisibleRootItem()
         for offset in offsets:
             gradient = OpacityGradient.fromBytes(fileData[offset:offset+80])
@@ -468,7 +470,8 @@ class ColorGradientModel(QStandardItemModel):
         self.file = MemoryStream()
         self.file.write(fileData)
         self.setHorizontalHeaderLabels(["Time 1", "Color 1", "Time 2", "Color 2", "Time 3", "Color 3", "Time 4", "Color 4", "Time 5", "Color 5", "Time 6", "Color 6", "Time 7", "Color 7", "Time 8", "Color 8", "Time 9", "Color 9", "Time 10", "Color 10"])
-        offsets = [x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C000000"))]
+        offsets = [x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
+        offsets.extend([x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
         root = self.invisibleRootItem()
         for offset in offsets:
             gradient = ColorGradient.fromBytes(fileData[offset:offset+160])
