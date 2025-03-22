@@ -343,12 +343,12 @@ class RotationModel(QStandardItemModel):
     def writeFileData(self, outFile):
         for rotation in self.rotations:
             rotationMatrix = rotation.getRotationMatrix()
-            quaternion = rotation.getQuaternion()
+            #quaternion = rotation.getQuaternion()
             outFile.seek(rotation.getOffset())
             for index, row in enumerate(rotationMatrix):
                 for data in row:
                     outFile.write(struct.pack("<f", data))
-                outFile.write(struct.pack("<f", quaternion[index]))
+                #outFile.write(struct.pack("<f", quaternion[index]))
                 
     def setData(self, index, value, role=Qt.EditRole):
         rotation = self.itemFromIndex(index.siblingAtColumn(0)).data()
@@ -697,6 +697,26 @@ class MainWindow(QMainWindow):
             self.positionViewModel.writeFileData(data)
             self.rotationViewModel.writeFileData(data)
             f.write(data.data)
+            
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            filename = url.toLocalFile()
+            if os.path.isfile(filename):
+                self.load_archive(archive_file=filename)
+    
+    def dragEnterEvent(self, event):
+        for url in event.mimeData().urls():
+            if not os.path.isfile(url.toLocalFile()):
+                event.ignore()
+                return
+        event.accept()
+        
+    def dragMoveEvent(self, event):
+        for url in event.mimeData().urls():
+            if not os.path.isfile(url.toLocalFile()):
+                event.ignore()
+                return
+        event.accept()
         
 def get_dark_mode_palette( app=None ):
     
