@@ -348,6 +348,7 @@ class RotationModel(QStandardItemModel):
             for index, row in enumerate(rotationMatrix):
                 for data in row:
                     outFile.write(struct.pack("<f", data))
+                outFile.advance(4)
                 #outFile.write(struct.pack("<f", quaternion[index]))
                 
     def setData(self, index, value, role=Qt.EditRole):
