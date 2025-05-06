@@ -7,11 +7,12 @@ import ast
 from scipy.spatial.transform import Rotation
 
 from PySide6.QtCore import QSize, Qt, Signal, QMargins, QSortFilterProxyModel, QItemSelection, QItemSelectionModel, \
-    QRect
+    QRect, QAbstractItemModel
 from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QMenu, QHBoxLayout, QVBoxLayout, \
     QAbstractItemView, QSizePolicy, QWidget, QSplitter, QListView, QPushButton, QSpacerItem, QFileDialog, QLabel, \
     QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle
-from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction
+from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence
+
 
 class MemoryStream:
     '''
@@ -520,18 +521,22 @@ class OpacityTable(QTableView):
         super().__init__(parent)
 		
 class ColorTable(QTableView):
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.initUI()
-        
+
     def initUI(self):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.showContextMenu)
         self.contextMenuColorPickerAction = QAction("Color Picker")
         self.contextMenuColorPickerAction.triggered.connect(self.showColorPicker)
         self.contextMenu = QMenu(self)
-        
+
+        # Add Ctrl+V shortcut
+        paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self)
+        paste_shortcut.activated.connect(self.pasteFromClipboard)
+
     def showColorPicker(self, pos):
         assert(len(self.selectedIndexes()) == 1)
         index = self.selectedIndexes()[0]
@@ -543,7 +548,7 @@ class ColorTable(QTableView):
             self.model().setData(index, str(colorTuple))
         except:
             pass
-        
+
     def showContextMenu(self, pos):
         self.contextMenu.clear()
         if not self.selectedIndexes() or len(self.selectedIndexes()) > 1:
@@ -552,6 +557,37 @@ class ColorTable(QTableView):
             self.contextMenu.addAction(self.contextMenuColorPickerAction)
             global_pos = self.mapToGlobal(pos)
             self.contextMenu.exec(global_pos)
+
+    def pasteFromClipboard(self):
+        clipboard = QApplication.clipboard()
+        text = clipboard.text().strip()
+        if not text:
+            return
+
+        selected = self.selectedIndexes()
+        if not selected:
+            return
+
+        model: QAbstractItemModel = self.model()
+
+        rows = text.split('\n')
+        if len(rows) == 1 and '\t' not in text:
+            # Single value: apply to all selected cells
+            for index in selected:
+                if index.isValid():
+                    model.setData(index, text)
+        else:
+            # Multi-value paste starting from top-left
+            data = [row.split('\t') for row in rows]
+            top_left = sorted(selected, key=lambda idx: (idx.row(), idx.column()))[0]
+            start_row = top_left.row()
+            start_col = top_left.column()
+
+            for r, row_data in enumerate(data):
+                for c, cell in enumerate(row_data):
+                    model_index = model.index(start_row + r, start_col + c)
+                    if model_index.isValid():
+                        model.setData(model_index, cell)
 
 class ColorSwatchDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
