@@ -6,8 +6,11 @@ from itertools import takewhile
 import ast
 from scipy.spatial.transform import Rotation
 
-from PySide6.QtCore import QSize, Qt, Signal, QMargins, QSortFilterProxyModel, QItemSelection, QItemSelectionModel
-from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QMenu, QHBoxLayout, QVBoxLayout, QAbstractItemView, QSizePolicy, QWidget, QSplitter, QListView, QPushButton, QSpacerItem, QFileDialog, QLabel, QTabWidget, QColorDialog, QTableView
+from PySide6.QtCore import QSize, Qt, Signal, QMargins, QSortFilterProxyModel, QItemSelection, QItemSelectionModel, \
+    QRect
+from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QMenu, QHBoxLayout, QVBoxLayout, \
+    QAbstractItemView, QSizePolicy, QWidget, QSplitter, QListView, QPushButton, QSpacerItem, QFileDialog, QLabel, \
+    QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle
 from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction
 
 class MemoryStream:
@@ -549,7 +552,58 @@ class ColorTable(QTableView):
             self.contextMenu.addAction(self.contextMenuColorPickerAction)
             global_pos = self.mapToGlobal(pos)
             self.contextMenu.exec(global_pos)
-		
+
+class ColorSwatchDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        text = index.data()
+        if not text:
+            super().paint(painter, option, index)
+            return
+
+        # Clean and parse RGB
+        cleaned_text = text.strip().lstrip("(").rstrip(")")
+
+        try:
+            parts = [float(x.strip()) for x in cleaned_text.split(",")]
+            if len(parts) != 3:
+                raise ValueError("Not 3 components")
+            r, g, b = [max(0, min(255, int(c))) for c in parts]
+            color = QColor(r, g, b)
+        except Exception:
+            super().paint(painter, option, index)
+            return
+
+        # Draw selection background if selected
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+
+        # Draw color swatch
+        swatch_size = 16
+        swatch_rect = QRect(
+            option.rect.left() + 4,
+            option.rect.center().y() - swatch_size // 2,
+            swatch_size,
+            swatch_size
+        )
+        painter.setPen(Qt.black)
+        painter.setBrush(color)
+        painter.drawRect(swatch_rect)
+
+        # Draw the RGB text next to the swatch
+        text_rect = QRect(
+            swatch_rect.right() + 6,
+            option.rect.top(),
+            option.rect.width() - swatch_size - 10,
+            option.rect.height()
+        )
+        painter.setPen(
+            option.palette.highlightedText().color()
+            if option.state & QStyle.State_Selected
+            else Qt.black
+        )
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -620,6 +674,9 @@ class MainWindow(QMainWindow):
         self.colorView = ColorTable(self)
         self.colorViewModel = ColorGradientModel()
         self.colorView.setModel(self.colorViewModel)
+
+        delegate = ColorSwatchDelegate()
+        self.colorView.setItemDelegate(delegate)
         
     def initOpacityView(self):
         self.opacityView = OpacityTable(self)
