@@ -1,17 +1,17 @@
-from typing import Any
-import struct
-import os
-from math import ceil
-from itertools import takewhile
 import ast
-from scipy.spatial.transform import Rotation
+import os
+import time
+import struct
+from functools import partial
 
-from PySide6.QtCore import QSize, Qt, Signal, QMargins, QSortFilterProxyModel, QItemSelection, QItemSelectionModel, \
-    QRect, QAbstractItemModel
-from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QMenu, QHBoxLayout, QVBoxLayout, \
-    QAbstractItemView, QSizePolicy, QWidget, QSplitter, QListView, QPushButton, QSpacerItem, QFileDialog, QLabel, \
-    QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle
-from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence
+from PySide6.QtCore import Qt, QRect, QAbstractItemModel
+from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVBoxLayout, \
+    QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox
+from scipy.spatial.transform import Rotation
+from PySide6.QtGui import QUndoCommand, QUndoStack
+
+
 
 
 class MemoryStream:
@@ -58,7 +58,7 @@ class MemoryStream:
         newData = self.data[self.location:self.location+length]
         self.location += length
         return bytearray(newData)
-        
+
     def advance(self, offset):
         self.location += offset
         if self.location < 0:
@@ -78,7 +78,7 @@ class MemoryStream:
     def read_format(self, format, size):
         format = self.endian+format
         return struct.unpack(format, self.read(size))[0]
-        
+
     def bytes(self, value, size = -1):
         if size == -1:
             size = len(value)
@@ -91,7 +91,7 @@ class MemoryStream:
             self.write(value)
             return bytearray(value)
         return value
-        
+
     def int8_read(self):
         return self.read_format('b', 1)
 
@@ -115,69 +115,89 @@ class MemoryStream:
 
     def uint64_read(self):
         return self.read_format('Q', 8)
-        
+
+class SetDataCommand(QUndoCommand):
+    def __init__(self, model, index, new_value, description="Edit Cell"):
+        super().__init__(description)
+        self.model = model
+        self.index = index
+        self.row = index.row()
+        self.column = index.column()
+        self.new_value = new_value
+        self.old_value = index.data()
+
+    def undo(self):
+        self.model.blockSignals(True)
+        self.model.setData(self.model.index(self.row, self.column), self.old_value)
+        self.model.blockSignals(False)
+
+    def redo(self):
+        self.model.blockSignals(True)
+        self.model.setData(self.model.index(self.row, self.column), self.new_value)
+        self.model.blockSignals(False)
+
 class OpacityGradient:
-    
+
     def __init__(self):
         self.fileOffset = 0
         self.opacities = []
-        
+
     @classmethod
     def fromBytes(cls, data):
         g = OpacityGradient()
         for n in range(10):
             g.opacities.append([data[n*4:(n+1)*4], data[40+n*4:40+(n+1)*4]])
         return g
-            
+
     def setOffset(self, offset):
         self.fileOffset = offset
-        
+
     def getOffset(self):
         return self.fileOffset
-        
+
 class Size:
-    
+
     def __init__(self):
         self.fileOffset = 0
         self.sizes = []
-        
+
     @classmethod
     def fromBytes(cls, data):
         g = Size()
         for n in range(10):
             g.sizes.append([data[n*4:(n+1)*4], data[40+n*4:40+(n+1)*4]])
         return g
-            
+
     def setOffset(self, offset):
         self.fileOffset = offset
-        
+
     def getOffset(self):
         return self.fileOffset
-        
+
 class EmitterPosition:
-    
+
     def __init__(self):
         self.fileOffset = 0
         self.position = [0, 0, 0]
-        
+
     @classmethod
     def fromBytes(cls, data):
         g = EmitterPosition()
         g.position = [data[0:4], data[4:8], data[8:12]]
         return g
-            
+
     def setOffset(self, offset):
         self.fileOffset = offset
-        
+
     def getOffset(self):
         return self.fileOffset
-        
+
 class EmitterRotation:
-    
+
     def __init__(self):
         self.fileOffset = 0
         self.rotation = None
-        
+
     @classmethod
     def fromBytes(cls, data):
         g = EmitterRotation()
@@ -187,40 +207,38 @@ class EmitterRotation:
             list(struct.unpack("<fff", data[32:44]))
         ])
         return g
-        
+
     def getRotationMatrix(self):
         return self.rotation.as_matrix()
-        
+
     def getQuaternion(self):
         return self.rotation.as_quat()
-        
+
     def setOffset(self, offset):
         self.fileOffset = offset
-        
+
     def getOffset(self):
         return self.fileOffset
-        
-        
 
 class ColorGradient:
-    
+
     def __init__(self):
         self.fileOffset = 0
         self.colors = []
-        
+
     @classmethod
     def fromBytes(cls, data):
         g = ColorGradient()
         for n in range(10):
             g.colors.append([data[n*4:(n+1)*4], data[40+n*12:40+(n+1)*12]])
         return g
-            
+
     def setOffset(self, offset):
         self.fileOffset = offset
-        
+
     def getOffset(self):
         return self.fileOffset
-        
+
 def find_all_occurrences(text, substring):
     indices = []
     start_index = 0
@@ -231,11 +249,11 @@ def find_all_occurrences(text, substring):
         indices.append(index)
         start_index = index + 1
     return indices
-    
+
 class SizeModel(QStandardItemModel):
-    
-    def __init__(self):
+    def __init__(self, undo_stack=None):
         super().__init__()
+        self.undo_stack = undo_stack
         self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
         self.sizes = []
 
@@ -261,7 +279,7 @@ class SizeModel(QStandardItemModel):
                 arr.append(timeItem)
                 arr.append(sizeItem)
             root.appendRow(arr)
-            
+
     def writeFileData(self, outFile):
         for size in self.sizes:
             offset = size.getOffset()
@@ -271,25 +289,40 @@ class SizeModel(QStandardItemModel):
                 outFile.write(s[0])
                 outFile.seek(offset + 40 + index*4)
                 outFile.write(s[1])
-                
                 outFile.seek(offset - 80 + index*4)
                 outFile.write(s[0])
                 outFile.seek(offset - 40 + index*4)
                 outFile.write(s[1])
 
     def setData(self, index, value, role=Qt.EditRole):
+        if role == Qt.EditRole and self.undo_stack:
+            class Command(QUndoCommand):
+                def __init__(self, model, index, value):
+                    super().__init__("Edit Size")
+                    self.model = model
+                    self.index = index
+                    self.old = index.data()
+                    self.new = value
+
+                def undo(self): self.model._apply(index=self.index, value=self.old)
+                def redo(self): self.model._apply(index=self.index, value=self.new)
+
+            self.undo_stack.push(Command(self, index, value))
+            return True
+        return self._apply(index, value)
+
+    def _apply(self, index, value):
         size = self.itemFromIndex(index.siblingAtColumn(0)).data()
-        i = int(index.column()/2)
+        i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
             size.sizes[i][1] = struct.pack("<f", data)
         else:
             size.sizes[i][0] = struct.pack("<f", data)
-        
-        return super().setData(index, value, role)
+        return super().setData(index, value, Qt.EditRole)
 
 class LifetimeModel(QStandardItemModel):
-    
+
     def __init__(self):
         super().__init__()
         self.setHorizontalHeaderLabels(["Min", "Max"])
@@ -304,7 +337,7 @@ class LifetimeModel(QStandardItemModel):
         minItem = QStandardItem(str(self.lifetime[0]))
         maxItem = QStandardItem(str(self.lifetime[1]))
         root.appendRow([minItem, maxItem])
-            
+
     def writeFileData(self, outFile):
         outFile.seek(4)
         outFile.write(struct.pack("<ff", *self.lifetime))
@@ -316,16 +349,16 @@ class LifetimeModel(QStandardItemModel):
             self.lifetime[1] = data
         else:
             self.lifetime[0] = data
-        
+
         return super().setData(index, value, role)
-        
+
 class RotationModel(QStandardItemModel):
-    
+
     def __init__(self):
         super().__init__()
         self.setHorizontalHeaderLabels(["x axis", "y axis", "z axis"])
         self.rotations = []
-        
+
     def setFileData(self, fileData):
         self.clear()
         self.rotations.clear()
@@ -343,7 +376,7 @@ class RotationModel(QStandardItemModel):
             yItem = QStandardItem(str(yData))
             zItem = QStandardItem(str(zData))
             root.appendRow([xItem, yItem, zItem])
-            
+
     def writeFileData(self, outFile):
         for rotation in self.rotations:
             rotationMatrix = rotation.getRotationMatrix()
@@ -354,7 +387,7 @@ class RotationModel(QStandardItemModel):
                     outFile.write(struct.pack("<f", data))
                 outFile.advance(4)
                 #outFile.write(struct.pack("<f", quaternion[index]))
-                
+
     def setData(self, index, value, role=Qt.EditRole):
         rotation = self.itemFromIndex(index.siblingAtColumn(0)).data()
         data = ast.literal_eval(value)
@@ -362,14 +395,14 @@ class RotationModel(QStandardItemModel):
         euler[index.column()] = data
         rotation.rotation = Rotation.from_euler('xyz', euler, degrees=True)
         return super().setData(index, value, role)
-        
+
 class PositionModel(QStandardItemModel):
-    
+
     def __init__(self):
         super().__init__()
         self.setHorizontalHeaderLabels(["x offset", "y offset", "z offset"])
         self.positions = []
-        
+
     def setFileData(self, fileData):
         self.clear()
         self.positions.clear()
@@ -388,24 +421,24 @@ class PositionModel(QStandardItemModel):
             yItem = QStandardItem(str(yData))
             zItem = QStandardItem(str(zData))
             root.appendRow([xItem, yItem, zItem])
-            
+
     def writeFileData(self, outFile):
         for position in self.positions:
             outFile.seek(position.getOffset())
             outFile.write(position.position[0])
             outFile.write(position.position[1])
             outFile.write(position.position[2])
-            
+
     def setData(self, index, value, role=Qt.EditRole):
         position = self.itemFromIndex(index.siblingAtColumn(0)).data()
         data = ast.literal_eval(value)
         position.position[index.column()] = struct.pack("<f", data)
         return super().setData(index, value, role)
-    
+
 class OpacityGradientModel(QStandardItemModel):
-    
-    def __init__(self):
+    def __init__(self, undo_stack=None):
         super().__init__()
+        self.undo_stack = undo_stack
         self.file = MemoryStream()
         self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
         self.gradients = []
@@ -434,7 +467,7 @@ class OpacityGradientModel(QStandardItemModel):
                 arr.append(timeItem)
                 arr.append(opacityItem)
             root.appendRow(arr)
-            
+
     def writeFileData(self, outFile):
         for gradient in self.gradients:
             offset = gradient.getOffset()
@@ -444,27 +477,42 @@ class OpacityGradientModel(QStandardItemModel):
                 outFile.write(opacity[0])
                 outFile.seek(offset + 40 + index*4)
                 outFile.write(opacity[1])
-                
                 outFile.seek(offset - 80 + index*4)
                 outFile.write(opacity[0])
                 outFile.seek(offset - 40 + index*4)
                 outFile.write(opacity[1])
 
     def setData(self, index, value, role=Qt.EditRole):
+        if role == Qt.EditRole and self.undo_stack:
+            class Command(QUndoCommand):
+                def __init__(self, model, index, value):
+                    super().__init__("Edit Opacity")
+                    self.model = model
+                    self.index = index
+                    self.old = index.data()
+                    self.new = value
+
+                def undo(self): self.model._apply(index=self.index, value=self.old)
+                def redo(self): self.model._apply(index=self.index, value=self.new)
+
+            self.undo_stack.push(Command(self, index, value))
+            return True
+        return self._apply(index, value)
+
+    def _apply(self, index, value):
         gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
-        i = int(index.column()/2)
+        i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
             gradient.opacities[i][1] = struct.pack("<f", data)
         else:
             gradient.opacities[i][0] = struct.pack("<f", data)
-        
-        return super().setData(index, value, role)
-    
+        return super().setData(index, value, Qt.EditRole)
+
 class ColorGradientModel(QStandardItemModel):
-    
-    def __init__(self):
+    def __init__(self, undo_stack=None):
         super().__init__()
+        self.undo_stack = undo_stack
         self.file = MemoryStream()
         self.setHorizontalHeaderLabels(["Time 1", "Color 1", "Time 2", "Color 2", "Time 3", "Color 3", "Time 4", "Color 4", "Time 5", "Color 5", "Time 6", "Color 6", "Time 7", "Color 7", "Time 8", "Color 8", "Time 9", "Color 9", "Time 10", "Color 10"])
         self.gradients = []
@@ -493,7 +541,7 @@ class ColorGradientModel(QStandardItemModel):
                 arr.append(timeItem)
                 arr.append(colorItem)
             root.appendRow(arr)
-            
+
     def writeFileData(self, outFile):
         for gradient in self.gradients:
             offset = gradient.getOffset()
@@ -505,21 +553,37 @@ class ColorGradientModel(QStandardItemModel):
                 outFile.write(color[1])
 
     def setData(self, index, value, role=Qt.EditRole):
+        if role == Qt.EditRole and self.undo_stack:
+            class Command(QUndoCommand):
+                def __init__(self, model, index, value):
+                    super().__init__("Edit Color")
+                    self.model = model
+                    self.index = index
+                    self.old = index.data()
+                    self.new = value
+
+                def undo(self): self.model._apply(index=self.index, value=self.old)
+                def redo(self): self.model._apply(index=self.index, value=self.new)
+
+            self.undo_stack.push(Command(self, index, value))
+            return True
+        return self._apply(index, value)
+
+    def _apply(self, index, value):
         gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
-        i = int(index.column()/2)
+        i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
             gradient.colors[i][1] = struct.pack("<fff", *data)
         else:
             gradient.colors[i][0] = struct.pack("<f", data)
-        
-        return super().setData(index, value, role)
-        
+        return super().setData(index, value, Qt.EditRole)
+
 class OpacityTable(QTableView):
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-		
+
 class ColorTable(QTableView):
 
     def __init__(self, parent=None):
@@ -548,6 +612,18 @@ class ColorTable(QTableView):
             self.model().setData(index, str(colorTuple))
         except:
             pass
+
+    def triggerColorPickerFromButton(self):
+        selected = self.selectedIndexes()
+        if len(selected) != 1:
+            QMessageBox.warning(self, "Invalid Selection", "Please select one color cell.")
+            return
+        index = selected[0]
+        if index.column() % 2 == 0:
+            QMessageBox.warning(self, "Invalid Cell", "Please select a color cell (odd-numbered column).")
+            return
+        self.showColorPicker(None)  # We ignore 'pos' in showColorPicker anyway
+
 
     def showContextMenu(self, pos):
         self.contextMenu.clear()
@@ -639,106 +715,216 @@ class ColorSwatchDelegate(QStyledItemDelegate):
         )
         painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
 
-
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HD2 Particle Modder")
-        self.resize(720, 720)
-        
+        self.setWindowTitle("HD2 Particle Modder - Version 2.0")
+        self.setWindowIcon(QIcon("assets/icon.png"))
+        self.resize(1100, 700)
+        self.undoStack = QUndoStack(self)
+
+        self.hidden_columns = {
+            'color': set(),
+            'opacity': set(),
+            'size': set()
+        }
+        self.setStatusBar(QStatusBar(self))
         self.initComponents()
+        self.filenameLabel = QLabel("No file loaded")
         self.connectComponents()
         self.layoutComponents()
-        
-        
+
     def initComponents(self):
         self.initMenuBar()
+        self.initTabWidget()
         self.initColorView()
         self.initOpacityView()
         self.initLifetimeView()
         self.initSizeView()
         self.initPositionView()
         self.initRotationView()
-        self.initTabWidget()
-        
+
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
         self.fileSaveArchiveAction.triggered.connect(self.saveArchive)
-        
+
     def layoutComponents(self):
-        pass
         self.setMinimumSize(300, 200)
         self.layout = QVBoxLayout()
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.addWidget(self.colorView)
-        
+
+        # Floating header strip widget
+        filenameStrip = QWidget(self)
+        filenameStripLayout = QHBoxLayout()
+        filenameStripLayout.setContentsMargins(8, 4, 8, 4)
+
+        self.filenameLabel.setText("No file loaded")
+        self.filenameLabel.setStyleSheet("font-weight: bold; font-size: 12px; color: white; text-decoration: none;")
+
+        self.openFileBtn = QToolButton(self)
+        self.openFileBtn.setText("Open")
+        self.openFileBtn.clicked.connect(lambda: self.load_archive())
+
+        self.saveFileBtn = QToolButton(self)
+        self.saveFileBtn.setText("Save")
+        self.saveFileBtn.clicked.connect(lambda: self.saveArchive())
+
+        filenameStripLayout.addWidget(self.filenameLabel)
+        filenameStripLayout.addStretch()
+        filenameStripLayout.addWidget(self.openFileBtn)
+        filenameStripLayout.addWidget(self.saveFileBtn)
+
+        filenameStrip.setLayout(filenameStripLayout)
+        filenameStrip.setStyleSheet("""
+            background-color: #434343;
+        """)
+        self.layout.addWidget(filenameStrip)
+
         self.layout.addWidget(self.tabWidget)
-        
+
+        # Color tab layout
         layout = QVBoxLayout()
+        buttonLayout = QHBoxLayout()
+        buttonLayout.addWidget(self.hideTimeColumnsBtn)
+        self.hideTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        buttonLayout.addWidget(self.pickColorBtn)
+        layout.addLayout(buttonLayout)
         layout.addWidget(self.colorView)
         self.colorTab.setLayout(layout)
+
+        # Opacity tab layout
         layout = QVBoxLayout()
+        opacityButtonLayout = QHBoxLayout()
+        opacityButtonLayout.addWidget(self.hideOpacityTimeColumnsBtn)
+        self.hideOpacityTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        layout.addLayout(opacityButtonLayout)
         layout.addWidget(self.opacityView)
         self.opacityTab.setLayout(layout)
+
+        # Lifetime tab layout
         layout = QVBoxLayout()
         layout.addWidget(self.lifetimeView)
         self.lifetimeTab.setLayout(layout)
+
+        # Size Scale tab layout
         layout = QVBoxLayout()
+        sizeButtonLayout = QHBoxLayout()
+        sizeButtonLayout.addWidget(self.hideSizeTimeColumnsBtn)
+        self.hideSizeTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        layout.addLayout(sizeButtonLayout)
         layout.addWidget(self.sizeView)
         self.sizeTab.setLayout(layout)
+
         layout = QVBoxLayout()
         layout.addWidget(self.positionView)
         self.positionTab.setLayout(layout)
+
         layout = QVBoxLayout()
         layout.addWidget(self.rotationView)
         self.rotationTab.setLayout(layout)
-        
+
         self.tabWidget.addTab(self.colorTab, "Color")
         self.tabWidget.addTab(self.opacityTab, "Opacity")
         self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
         self.tabWidget.addTab(self.sizeTab, "Size Scale")
         self.tabWidget.addTab(self.positionTab, "Emitter Offset")
         self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
-        
+
         widget = QWidget()
         widget.setLayout(self.layout)
         self.setCentralWidget(widget)
-        
+
     def initColorView(self):
         self.colorView = ColorTable(self)
-        self.colorViewModel = ColorGradientModel()
+        self.colorViewModel = ColorGradientModel(self.undoStack)
         self.colorView.setModel(self.colorViewModel)
 
         delegate = ColorSwatchDelegate()
         self.colorView.setItemDelegate(delegate)
-        
+
+        self.pickColorBtn = QToolButton(self.colorTab)
+        self.pickColorBtn.setText("Color Picker")
+        self.pickColorBtn.setToolTip("Open Color Picker for selected color cell")
+        self.pickColorBtn.clicked.connect(self.colorView.triggerColorPickerFromButton)
+
+
+        self.hideTimeColumnsBtn = QToolButton(self.colorTab)
+        self.hideTimeColumnsBtn.setText("Toggle Time Columns")
+        self.hideTimeColumnsBtn.clicked.connect(self.toggleTimeColumns)
+
+    def toggleTimeColumns(self):
+        for col in range(self.colorViewModel.columnCount()):
+            header = self.colorViewModel.headerData(col, Qt.Horizontal)
+            if isinstance(header, str) and header.lower().startswith("time"):
+                hidden = self.colorView.isColumnHidden(col)
+                self.colorView.setColumnHidden(col, not hidden)
+                if not hidden:
+                    self.hidden_columns['color'].add(col)
+                else:
+                    self.hidden_columns['color'].discard(col)
+
     def initOpacityView(self):
         self.opacityView = OpacityTable(self)
-        self.opacityViewModel = OpacityGradientModel()
+        self.opacityViewModel = OpacityGradientModel(self.undoStack)
         self.opacityView.setModel(self.opacityViewModel)
-        
+
+        self.hideOpacityTimeColumnsBtn = QToolButton(self.opacityTab)
+        self.hideOpacityTimeColumnsBtn.setText("Toggle Time Columns")
+        self.hideOpacityTimeColumnsBtn.clicked.connect(self.toggleOpacityTimeColumns)
+
+    def toggleOpacityTimeColumns(self):
+        for col in range(self.opacityViewModel.columnCount()):
+            header = self.opacityViewModel.headerData(col, Qt.Horizontal)
+            if isinstance(header, str) and header.lower().startswith("time"):
+                hidden = self.opacityView.isColumnHidden(col)
+                self.opacityView.setColumnHidden(col, not hidden)
+                if not hidden:
+                    self.hidden_columns['opacity'].add(col)
+                else:
+                    self.hidden_columns['opacity'].discard(col)
+
+    def initSizeView(self):
+        self.sizeView = QTableView(self)
+        self.sizeViewModel = SizeModel(self.undoStack)
+        self.sizeView.setModel(self.sizeViewModel)
+
+        self.hideSizeTimeColumnsBtn = QToolButton(self.sizeTab)
+        self.hideSizeTimeColumnsBtn.setText("Toggle Time Columns")
+        self.hideSizeTimeColumnsBtn.clicked.connect(self.toggleSizeTimeColumns)
+
+    def toggleSizeTimeColumns(self):
+        for col in range(self.sizeViewModel.columnCount()):
+            header = self.sizeViewModel.headerData(col, Qt.Horizontal)
+            if isinstance(header, str) and header.lower().startswith("time"):
+                hidden = self.sizeView.isColumnHidden(col)
+                self.sizeView.setColumnHidden(col, not hidden)
+                if not hidden:
+                    self.hidden_columns['size'].add(col)
+                else:
+                    self.hidden_columns['size'].discard(col)
+
+    def applyHiddenColumns(self, key, tableView):
+        for col in range(tableView.model().columnCount()):
+            tableView.setColumnHidden(col, col in self.hidden_columns[key])
+
     def initLifetimeView(self):
         self.lifetimeView = QTableView(self)
         self.lifetimeViewModel = LifetimeModel()
         self.lifetimeView.setModel(self.lifetimeViewModel)
-        
-    def initSizeView(self):
-        self.sizeView = QTableView(self)
-        self.sizeViewModel = SizeModel()
-        self.sizeView.setModel(self.sizeViewModel)
-        
+
     def initPositionView(self):
         self.positionView = QTableView(self)
         self.positionViewModel = PositionModel()
         self.positionView.setModel(self.positionViewModel)
-        
+
     def initRotationView(self):
         self.rotationView = QTableView(self)
         self.rotationViewModel = RotationModel()
         self.rotationView.setModel(self.rotationViewModel)
-        
+
     def initTabWidget(self):
         self.tabWidget = QTabWidget(self)
         self.colorTab = QWidget(self.tabWidget)
@@ -747,22 +933,31 @@ class MainWindow(QMainWindow):
         self.sizeTab = QWidget(self.tabWidget)
         self.positionTab = QWidget(self.tabWidget)
         self.rotationTab = QWidget(self.tabWidget)
-        
+
     def initMenuBar(self):
         menu_bar = self.menuBar()
-        
+
         self.file_menu = menu_bar.addMenu("File")
-        
+
         self.fileOpenArchiveAction = QAction("Open", self)
         self.fileSaveArchiveAction = QAction("Save", self)
-        
+
         self.file_menu.addAction(self.fileOpenArchiveAction)
         self.file_menu.addAction(self.fileSaveArchiveAction)
+
+        self.edit_menu = menu_bar.addMenu("Edit")
+        self.undo_action = self.undoStack.createUndoAction(self, "Undo")
+        self.undo_action.setShortcut(QKeySequence.Undo)
+        self.redo_action = self.undoStack.createRedoAction(self, "Redo")
+        self.redo_action.setShortcut(QKeySequence.Redo)
+        self.edit_menu.addAction(self.undo_action)
+        self.edit_menu.addAction(self.redo_action)
 
     def load_archive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
             archive_file = QFileDialog.getOpenFileName(self, "Select archive", str(initialdir), "All Files (*.*)")
             archive_file = archive_file[0]
+            self.filenameLabel.setText(f"File: {os.path.basename(archive_file)}")
         if not archive_file:
             return
         self.name = archive_file
@@ -774,7 +969,17 @@ class MainWindow(QMainWindow):
             self.sizeViewModel.setFileData(self.data)
             self.positionViewModel.setFileData(self.data)
             self.rotationViewModel.setFileData(self.data)
-            
+
+            # Reapply hidden column states
+            self.applyHiddenColumns('color', self.colorView)
+            self.applyHiddenColumns('opacity', self.opacityView)
+            self.applyHiddenColumns('size', self.sizeView)
+            self.statusBar().showMessage(f"Loaded: {os.path.basename(self.name)}", 5000)
+            stat = os.stat(archive_file)
+            modified_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
+
+            self.filenameLabel.setText(f"{os.path.basename(archive_file)} — last modified: {modified_time}")
+
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
             archive_file = QFileDialog.getSaveFileName(self, "Select archive", self.name)
@@ -791,29 +996,31 @@ class MainWindow(QMainWindow):
             self.positionViewModel.writeFileData(data)
             self.rotationViewModel.writeFileData(data)
             f.write(data.data)
-            
+
+            self.statusBar().showMessage(f"Saved: {os.path.basename(archive_file)}", 5000)
+
     def dropEvent(self, event):
         for url in event.mimeData().urls():
             filename = url.toLocalFile()
             if os.path.isfile(filename):
                 self.load_archive(archive_file=filename)
-    
+
     def dragEnterEvent(self, event):
         for url in event.mimeData().urls():
             if not os.path.isfile(url.toLocalFile()):
                 event.ignore()
                 return
         event.accept()
-        
+
     def dragMoveEvent(self, event):
         for url in event.mimeData().urls():
             if not os.path.isfile(url.toLocalFile()):
                 event.ignore()
                 return
         event.accept()
-        
+
 def get_dark_mode_palette( app=None ):
-    
+
     darkPalette = app.palette()
     darkPalette.setColor( QPalette.Window, QColor( 53, 53, 53 ) )
     darkPalette.setColor( QPalette.WindowText, Qt.white )
@@ -835,16 +1042,16 @@ def get_dark_mode_palette( app=None ):
     darkPalette.setColor( QPalette.Disabled, QPalette.Highlight, QColor( 80, 80, 80 ) )
     darkPalette.setColor( QPalette.HighlightedText, Qt.white )
     darkPalette.setColor( QPalette.Disabled, QPalette.HighlightedText, QColor( 127, 127, 127 ), )
-    
+
     return darkPalette
-        
+
 if __name__ == "__main__":
     app = QApplication([])
     app.setStyle("Fusion")
     app.setPalette(get_dark_mode_palette(app))
-    
+
     window = MainWindow()
-    
+
     window.show()
-    
+
     app.exec()
