@@ -583,6 +583,40 @@ class OpacityTable(QTableView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self)
+        paste_shortcut.activated.connect(self.pasteFromClipboard)
+
+        
+    def pasteFromClipboard(self):
+        clipboard = QApplication.clipboard()
+        text = clipboard.text().strip()
+        if not text:
+            return
+
+        selected = self.selectedIndexes()
+        if not selected:
+            return
+
+        model: QAbstractItemModel = self.model()
+
+        rows = text.split('\n')
+        if len(rows) == 1 and '\t' not in text:
+            # Single value: apply to all selected cells
+            for index in selected:
+                if index.isValid():
+                    model.setData(index, text)
+        else:
+            # Multi-value paste starting from top-left
+            data = [row.split('\t') for row in rows]
+            top_left = sorted(selected, key=lambda idx: (idx.row(), idx.column()))[0]
+            start_row = top_left.row()
+            start_col = top_left.column()
+
+            for r, row_data in enumerate(data):
+                for c, cell in enumerate(row_data):
+                    model_index = model.index(start_row + r, start_col + c)
+                    if model_index.isValid():
+                        model.setData(model_index, cell)
 
 class ColorTable(QTableView):
 
