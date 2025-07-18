@@ -3,16 +3,284 @@ import os
 import time
 import struct
 from functools import partial
+import xml.etree.cElementTree as ET
 
-from PySide6.QtCore import Qt, QRect, QAbstractItemModel
-from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon
+from PySide6.QtCore import Qt, QRect, QAbstractItemModel, Signal, QXmlStreamWriter, QXmlStreamReader
+from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon, QDoubleValidator, QValidator
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVBoxLayout, \
-    QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox
+    QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox, QFileSystemModel, QLineEdit, QTreeWidget, QTreeWidgetItem
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
+VERSION = 2.0
 
+class EmitterPosition:
 
+    def __init__(self):
+        self.fileOffset = 0
+        self.position = [0, 0, 0]
+
+    @classmethod
+    def fromBytes(cls, data):
+        g = EmitterPosition()
+        g.position = list(struct.unpack("<fff", data[0:12]))
+        return g
+        
+    def to_bytes(self):
+        return struct.pack("<fff", *self.position)
+
+    def setOffset(self, offset):
+        self.fileOffset = offset
+
+    def getOffset(self):
+        return self.fileOffset
+
+class EmitterRotation:
+
+    def __init__(self):
+        self.fileOffset = 0
+        self.rotation = None
+
+    @classmethod
+    def fromBytes(cls, data):
+        g = EmitterRotation()
+        g.rotation = Rotation.from_matrix([
+            list(struct.unpack("<fff", data[0:12])),
+            list(struct.unpack("<fff", data[16:28])),
+            list(struct.unpack("<fff", data[32:44]))
+        ])
+        return g
+        
+    def to_bytes(self):
+        rot_mat = self.rotation.as_matrix()
+        row1 = struct.pack("<fff", *rot_mat[0])
+        row2 = struct.pack("<fff", *rot_mat[1])
+        row3 = struct.pack("<fff", *rot_mat[2])
+        zero_as_bytes = bytearray(4)
+        return row1 + zero_as_bytes + row2 + zero_as_bytes + row3 + zero_as_bytes
+
+    def getRotationMatrix(self):
+        return self.rotation.as_matrix()
+
+    def getQuaternion(self):
+        return self.rotation.as_quat()
+
+    def setOffset(self, offset):
+        self.fileOffset = offset
+
+    def getOffset(self):
+        return self.fileOffset
+
+class Visualizer:
+    
+    BILLBOARD = 0
+    LIGHT = 1
+    MESH = 2
+    
+    def __init__(self):
+        pass
+    
+    def from_memory_stream(self, stream):
+        self.visualizer_type = stream.uint32_read()
+        if self.visualizer_type == Visualizer.BILLBOARD:
+            self.unk1 = stream.uint32_read()
+            self.unk2 = stream.uint32_read()
+            self.material_id = stream.uint64_read()
+            self.data = stream.read(240)
+        elif self.visualizer_type == Visualizer.LIGHT:
+            self.data = stream.read(256)
+        elif self.visualizer_type == Visualizer.MESH:
+            self.unit_id = stream.uint64_read()
+            self.mesh_id = stream.uint64_read()
+            self.material_id = stream.uint64_read()
+            self.data = stream.read(224)
+            
+    def write_to_memory_stream(self, stream):
+        if self.visualizer_type == Visualizer.BILLBOARD:
+            data = struct.pack("<IIIQ", self.visualizer_type, self.unk1, self.unk2, self.material_id) + self.data
+            stream.write(data)
+        elif self.visualizer_type == Visualizer.LIGHT:
+            stream.write(self.data)
+        elif self.visualizer_type == Visualizer.MESH:
+            data = struct.pack("<IQQQ", self.visualizer_type, self.unit_id, self.mesh_id, self.material_id) + self.data
+            stream.write(data)
+        
+class Graph:
+    def __init__(self):
+        pass
+        
+    def from_memory_stream(self, stream):
+        self.x = [stream.float32_read() for _ in range(10)]
+        self.y = [stream.float32_read() for _ in range(10)]
+        
+    def write_to_memory_stream(self, stream):
+        stream.write(struct.pack("<ffffffffff", *self.x))
+        stream.write(struct.pack("<ffffffffff", *self.y))
+        
+class ColorGraph:
+    def __init__(self):
+        pass
+        
+    def from_memory_stream(self, stream):
+        self.x = [stream.float32_read() for _ in range(10)]
+        self.y = [[stream.float32_read() for _ in range(3)] for _ in range(10)]
+        
+    def write_to_memory_stream(self, stream):
+        stream.write(struct.pack("<ffffffffff", *self.x))
+        for color in self.y:
+            stream.write(struct.pack("<fff", *color))
+
+class ParticleSystem:
+    def __init__(self):
+        self.scale_graphs = []
+        self.opacity_graphs = []
+        self.color_graphs = []
+        self.graph_offsets = []
+        self.visualizer = None
+        self.offset = 0
+        self.max_num_particles = 0
+        
+    def is_rendering(self):
+        return self.non_rendering == 0
+        
+    def from_memory_stream(self, stream):
+        self.scale_graphs.clear()
+        self.opacity_graphs.clear()
+        self.color_graphs.clear()
+        self.graph_offsets.clear()
+        self.offset = stream.tell()
+        self.max_num_particles = stream.uint32_read()
+        self.num_components = stream.uint32_read()
+        self.unk1 = stream.read(68)
+        #self.advance(4)
+        #self.advance(64)
+        self.non_rendering = stream.uint32_read()
+        self.unk2 = stream.read(40)
+        # rotation
+        self.rotation = EmitterRotation.fromBytes(stream.read(48))
+        # position
+        self.position = EmitterPosition.fromBytes(stream.read(12))
+        self.unk3 = stream.read(52)
+        self.component_list_offset = stream.uint32_read()
+        self.unk4 = stream.read(16)
+        self.visualizer_offset = stream.uint32_read()
+        self.size = stream.uint32_read()
+        if not self.is_rendering():
+            stream.seek(self.offset + self.size)
+            return
+        if self.visualizer_offset == self.size:
+            stream.seek(self.offset + self.size)
+            return
+        stream.seek(self.offset + self.visualizer_offset)
+        visualizer = Visualizer()
+        visualizer.from_memory_stream(stream)
+        self.visualizer = visualizer
+        while True:
+            graph_type = stream.uint32_read()
+            while graph_type != 0x05:
+                graph_type = stream.uint32_read()
+                if stream.tell() == self.offset + self.size:
+                    return
+            stream.advance(8)
+            self.graph_offsets.append(stream.tell())
+            scale = Graph()
+            scale.from_memory_stream(stream)
+            scale.from_memory_stream(stream)
+            self.scale_graphs.append(scale)
+            opacity = Graph()
+            opacity.from_memory_stream(stream)
+            opacity.from_memory_stream(stream)
+            self.opacity_graphs.append(opacity)
+            color = ColorGraph()
+            color.from_memory_stream(stream)
+            self.color_graphs.append(color)
+            
+        stream.seek(self.offset + self.size)
+        
+    def write_to_memory_stream(self, stream):
+        stream.write(struct.pack("<II", self.max_num_particles, self.num_components))
+        stream.write(self.unk1)
+        stream.write(struct.pack("<I", self.non_rendering))
+        stream.write(self.unk2)
+        stream.write(self.rotation.to_bytes())
+        stream.write(self.position.to_bytes())
+        stream.write(self.unk3)
+        stream.write(struct.pack("<I", self.component_list_offset))
+        stream.write(self.unk4)
+        stream.write(struct.pack("<II", self.visualizer_offset, self.size))
+        if self.non_rendering != 0:
+            stream.seek(self.offset + self.size)
+            return
+        if self.visualizer_offset == self.size:
+            stream.seek(self.offset + self.size)
+            return
+        stream.seek(self.offset + self.visualizer_offset)
+        self.visualizer.write_to_memory_stream(stream)
+        for index, offset in enumerate(self.graph_offsets):
+            stream.seek(offset)
+            self.scale_graphs[index].write_to_memory_stream(stream)
+            self.scale_graphs[index].write_to_memory_stream(stream)
+            self.opacity_graphs[index].write_to_memory_stream(stream)
+            self.opacity_graphs[index].write_to_memory_stream(stream)
+            self.color_graphs[index].write_to_memory_stream(stream)
+        
+        
+    
+class ParticleEffectVariable:
+    def __init__(self):
+        self.name_hash = 0
+        self.x = 0
+        self.y = 0
+        self.z = 0
+
+class ParticleEffect:
+    def __init__(self):
+        self.variables = []
+        self.particle_systems = []
+        self.min_lifetime = 0
+        self.max_lifetime = 0
+        self.num_variables = 0
+        self.num_particle_systems = 0
+        
+    def from_memory_stream(self, stream):
+        self.variables.clear()
+        self.particle_systems.clear()
+        magic = stream.uint32_read()
+        if magic != 0x6E:
+            return
+        self.min_lifetime = stream.float32_read()
+        self.max_lifetime = stream.float32_read()
+        stream.advance(8)
+        self.num_variables = stream.uint32_read()
+        self.num_particle_systems = stream.uint32_read()
+        stream.advance(44)
+        for _ in range(self.num_variables):
+            new_var = ParticleEffectVariable()
+            new_var.name_hash = stream.uint32_read()
+            self.variables.append(new_var)
+        for variable in self.variables:
+            variable.x = stream.float32_read()
+            variable.y = stream.float32_read()
+            variable.z = stream.float32_read()
+        for _ in range(self.num_particle_systems):
+            new_system = ParticleSystem()
+            new_system.from_memory_stream(stream)
+            self.particle_systems.append(new_system)
+            
+    def write_to_memory_stream(self, stream):
+        stream.advance(4)
+        stream.write(struct.pack("<ff", self.min_lifetime, self.max_lifetime))
+        stream.advance(8)
+        stream.write(self.num_variables.to_bytes(4, byteorder="little"))
+        stream.write(self.num_particle_systems.to_bytes(4, byteorder="little"))
+        stream.advance(44)
+        for variable in self.variables:
+            stream.write(struct.pack("<I", variable.name_hash))
+        for variable in self.variables:
+            stream.write(struct.pack("<fff", variable.x, variable.y, variable.z))
+        for particle_system in self.particle_systems:
+            stream.seek(particle_system.offset)
+            particle_system.write_to_memory_stream(stream)
 
 class MemoryStream:
     '''
@@ -115,6 +383,124 @@ class MemoryStream:
 
     def uint64_read(self):
         return self.read_format('Q', 8)
+        
+    def float32_read(self):
+        return self.read_format('f', 4)
+        
+class ParticleSystemView(QWidget):
+    
+    '''
+    Container for showing a particle system. Includes visualizer, color graph, opacity graph, scale graph, rotation, and position
+    '''
+    
+    def __init__(self, particleSystem, trailSpawner = -1, parent=None):
+        super().__init__(parent)
+        self.particleSystem = particleSystem
+        
+        self.layout = QVBoxLayout()
+        if trailSpawner == -1:
+            self.visualizerView = VisualizerView(self.particleSystem.visualizer)
+            
+            self.layout.addWidget(self.visualizerView)
+            
+        else:
+            self.trailSpawnerLabel = QLabel(f"Trail Spawner for Particle System {trailSpawner}", parent=self)
+            self.layout.addWidget(self.trailSpawnerLabel)
+        
+        self.layout.addStretch(1)
+        self.setLayout(self.layout)
+        
+class BigIntValidator(QDoubleValidator):
+    def __init__(self, bottom=float('-inf'), top=float('inf')):
+        super(BigIntValidator, self).__init__(bottom, top, 0)
+        self.setNotation(QDoubleValidator.StandardNotation)
+
+    def validate(self, text, pos):
+        if text.endswith('.'):
+            return QValidator.Invalid, text, pos
+        return super(BigIntValidator, self).validate(text, pos)
+        
+class VisualizerView(QWidget):
+    
+    def __init__(self, visualizer, parent=None):
+        super().__init__(parent)
+        lineWidth = 160
+        self.int32Max = (2**32)-1
+        self.int64Max = (2**64)-1
+        self.layout = QVBoxLayout()
+        self.visualizer = visualizer
+        self.materialIdLabel = self.unitIdLabel=self.meshIdLabel = None
+        self.materialIdEdit = self.unitIdEdit = self.meshIdEdit = None
+        self.visualizerLabel = QLabel("", parent=self)
+        
+        self.int32Validator = BigIntValidator(0, self.int32Max)
+        self.int64Validator = BigIntValidator(0, self.int64Max)
+        if self.visualizer.visualizer_type == Visualizer.BILLBOARD:
+            # material ID
+            self.materialIdLabel = QLabel(f"Material: ", parent=self)
+            self.materialIdEdit = QLineEdit(f"{self.visualizer.material_id}", parent=self)
+            self.materialIdEdit.setFixedWidth(lineWidth)
+            self.materialIdEdit.editingFinished.connect(self.materialIdChanged)
+            self.materialIdEdit.setValidator(self.int64Validator)
+            self.visualizerLabel.setText("Visualizer Type: Billboard")
+        elif self.visualizer.visualizer_type == Visualizer.LIGHT:
+            # no IDs
+            self.visualizerLabel.setText("Visualizer Type: Light")
+        elif self.visualizer.visualizer_type == Visualizer.MESH:
+            # material, unit, and mesh ID
+            self.materialIdEdit = QLineEdit(f"{self.visualizer.material_id}", parent=self)
+            self.materialIdEdit.setValidator(self.int64Validator)
+            self.materialIdEdit.editingFinished.connect(self.materialIdChanged)
+            self.materialIdEdit.setFixedWidth(lineWidth)
+            self.materialIdLabel = QLabel(f"Material: ", parent=self)
+            
+            self.unitIdEdit = QLineEdit(f"{self.visualizer.unit_id}", parent=self)
+            self.unitIdEdit.setValidator(self.int64Validator)
+            self.unitIdEdit.editingFinished.connect(self.unitIdChanged)
+            self.unitIdEdit.setFixedWidth(lineWidth)
+            self.unitIdLabel = QLabel(f"Unit: ", parent=self)
+            
+            self.meshIdEdit = QLineEdit(f"{self.visualizer.mesh_id}", parent=self)
+            self.meshIdEdit.editingFinished.connect(self.meshIdChanged)
+            self.meshIdEdit.setValidator(self.int64Validator)
+            self.meshIdEdit.setFixedWidth(lineWidth)
+            self.meshIdLabel = QLabel(f"Mesh: ", parent=self)
+            
+            self.visualizerLabel.setText("Visualizer Type: Mesh")
+            
+        self.layout.addWidget(self.visualizerLabel, alignment=Qt.AlignTop | Qt.AlignLeft)
+        for label, edit in zip([self.materialIdLabel, self.unitIdLabel, self.meshIdLabel], [self.materialIdEdit, self.unitIdEdit, self.meshIdEdit]):
+            if label is not None and edit is not None:
+                layout = QHBoxLayout()
+                layout.addWidget(label)
+                layout.addWidget(edit)
+                layout.addStretch(1)
+                self.layout.addLayout(layout)
+        self.layout.addStretch(1)
+            
+        self.setLayout(self.layout)
+            
+    def meshIdChanged(self):
+        newId = int(self.meshIdEdit.text())
+        self.visualizer.mesh_id = newId & self.int32Max
+        
+    def materialIdChanged(self):
+        newId = int(self.materialIdEdit.text())
+        self.visualizer.material_id = newId & self.int64Max
+        
+    def unitIdChanged(self):
+        newId = int(self.unitIdEdit.text())
+        self.visualizer.unit_id = newId & self.int64Max
+        
+        
+class GraphView(QWidget):
+    def __init__(self, graph):
+        pass
+        
+class LifetimeView(QWidget):
+    def __init__(self, particleEffect):
+        pass
+        
 
 class SetDataCommand(QUndoCommand):
     def __init__(self, model, index, new_value, description="Edit Cell"):
@@ -167,52 +553,6 @@ class Size:
         for n in range(10):
             g.sizes.append([data[n*4:(n+1)*4], data[40+n*4:40+(n+1)*4]])
         return g
-
-    def setOffset(self, offset):
-        self.fileOffset = offset
-
-    def getOffset(self):
-        return self.fileOffset
-
-class EmitterPosition:
-
-    def __init__(self):
-        self.fileOffset = 0
-        self.position = [0, 0, 0]
-
-    @classmethod
-    def fromBytes(cls, data):
-        g = EmitterPosition()
-        g.position = [data[0:4], data[4:8], data[8:12]]
-        return g
-
-    def setOffset(self, offset):
-        self.fileOffset = offset
-
-    def getOffset(self):
-        return self.fileOffset
-
-class EmitterRotation:
-
-    def __init__(self):
-        self.fileOffset = 0
-        self.rotation = None
-
-    @classmethod
-    def fromBytes(cls, data):
-        g = EmitterRotation()
-        g.rotation = Rotation.from_matrix([
-            list(struct.unpack("<fff", data[0:12])),
-            list(struct.unpack("<fff", data[16:28])),
-            list(struct.unpack("<fff", data[32:44]))
-        ])
-        return g
-
-    def getRotationMatrix(self):
-        return self.rotation.as_matrix()
-
-    def getQuaternion(self):
-        return self.rotation.as_quat()
 
     def setOffset(self, offset):
         self.fileOffset = offset
@@ -748,12 +1088,92 @@ class ColorSwatchDelegate(QStyledItemDelegate):
             else Qt.black
         )
         painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+        
+class LoadedFilesWindow(QWidget):
+    
+    loadFile = Signal(str, MemoryStream)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout()
+        
+        self.treeWidget = QTreeWidget(self)
+        self.treeWidget.setHeaderLabels(["Loaded Files"])
+        
+        self.layout.addWidget(self.treeWidget)
+        
+        self.setLayout(self.layout)
+        
+    def addFile(self, filepath, fileData, note=""):
+        fileWidget = LoadedFileWidget(filepath, fileData, note=note)
+        fileWidget.openClicked.connect(self.load)
+        fileWidget.removeClicked.connect(self.remove)
+        item = QTreeWidgetItem(self.treeWidget)
+        fileWidget.item = item
+        self.treeWidget.setItemWidget(item, 0, fileWidget)
+        
+    def getAllLoadedFiles(self):
+        fileWidgets = []
+        root = self.treeWidget.invisibleRootItem()
+        for i in range(root.childCount()):
+            fileWidgets.append(self.treeWidget.itemWidget(root.child(i), 0))
+        return fileWidgets
+        
+    def remove(self, item):
+        (item.parent() or self.treeWidget.invisibleRootItem()).removeChild(item)
+        
+    def load(self, filepath: str, fileData: MemoryStream):
+        self.loadFile.emit(filepath, fileData)
+        
+    def clear(self):
+        self.treeWidget.clear()
+        
+        
+class LoadedFileWidget(QWidget):
+    
+    openClicked = Signal(str, MemoryStream)
+    removeClicked = Signal(QTreeWidgetItem)
+    
+    def __init__(self, filepath, fileData, note="", parent=None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self.fileData = fileData
+        self.note = note
+        
+        self.layout = QHBoxLayout()
+        
+        self.selectButton = QToolButton()
+        self.selectButton.setText("open")
+        self.selectButton.clicked.connect(self.load)
+        self.nameLabel = QLabel(os.path.basename(self.filepath), parent=self)
+        self.noteEdit = QLineEdit(self.note, parent=self)
+        self.noteEdit.editingFinished.connect(self.setNote)
+        self.noteEdit.setPlaceholderText("Set note...")
+        self.removeButton = QToolButton()
+        self.removeButton.setText("\u2715")
+        self.removeButton.clicked.connect(self.remove)
+        
+        self.layout.addWidget(self.selectButton)
+        self.layout.addWidget(self.nameLabel)
+        self.layout.addWidget(self.noteEdit)
+        #self.layout.addStretch(1)
+        self.layout.addWidget(self.removeButton)
+        self.setLayout(self.layout)
+        
+    def setNote(self):
+        self.note = self.noteEdit.text()
+        
+    def remove(self):
+        self.removeClicked.emit(self.item)
+        
+    def load(self):
+        self.openClicked.emit(self.filepath, self.fileData)
 
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HD2 Particle Modder - Version 2.0")
+        self.setWindowTitle(f"HD2 Particle Modder - Version {VERSION}")
         self.setWindowIcon(QIcon("assets/icon.png"))
         self.resize(1100, 700)
         self.undoStack = QUndoStack(self)
@@ -772,23 +1192,25 @@ class MainWindow(QMainWindow):
     def initComponents(self):
         self.initMenuBar()
         self.initTabWidget()
-        self.initColorView()
-        self.initOpacityView()
-        self.initLifetimeView()
-        self.initSizeView()
-        self.initPositionView()
-        self.initRotationView()
+        #self.initColorView()
+        #self.initOpacityView()
+        #self.initLifetimeView()
+        #self.initSizeView()
+        #self.initPositionView()
+        #self.initRotationView()
 
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
         self.fileSaveArchiveAction.triggered.connect(self.saveArchive)
+        self.fileSaveProjectAction.triggered.connect(self.saveProject)
+        self.fileLoadProjectAction.triggered.connect(self.loadProject)
 
     def layoutComponents(self):
         self.setMinimumSize(300, 200)
         self.layout = QVBoxLayout()
-
+        
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.colorView)
+        #self.splitter.addWidget(self.colorView)
 
         # Floating header strip widget
         filenameStrip = QWidget(self)
@@ -815,57 +1237,64 @@ class MainWindow(QMainWindow):
         filenameStrip.setStyleSheet("""
             background-color: #434343;
         """)
+        
+        self.loadedFilesWindow = LoadedFilesWindow(self)
+        self.loadedFilesWindow.loadFile.connect(self.loadFromStream)
+        
         self.layout.addWidget(filenameStrip)
-
-        self.layout.addWidget(self.tabWidget)
+        self.splitter.addWidget(self.loadedFilesWindow)
+        self.splitter.addWidget(self.tabWidget)
+        self.layout.addWidget(self.splitter)
+        self.layout.addStretch(1)
+        #self.layout.addWidget(self.tabWidget)
 
         # Color tab layout
-        layout = QVBoxLayout()
-        buttonLayout = QHBoxLayout()
-        buttonLayout.addWidget(self.hideTimeColumnsBtn)
-        self.hideTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        buttonLayout.addWidget(self.pickColorBtn)
-        layout.addLayout(buttonLayout)
-        layout.addWidget(self.colorView)
-        self.colorTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #buttonLayout = QHBoxLayout()
+        #buttonLayout.addWidget(self.hideTimeColumnsBtn)
+        #self.hideTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        #buttonLayout.addWidget(self.pickColorBtn)
+        #layout.addLayout(buttonLayout)
+        #layout.addWidget(self.colorView)
+        #self.colorTab.setLayout(layout)
 
         # Opacity tab layout
-        layout = QVBoxLayout()
-        opacityButtonLayout = QHBoxLayout()
-        opacityButtonLayout.addWidget(self.hideOpacityTimeColumnsBtn)
-        self.hideOpacityTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        layout.addLayout(opacityButtonLayout)
-        layout.addWidget(self.opacityView)
-        self.opacityTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #opacityButtonLayout = QHBoxLayout()
+        #opacityButtonLayout.addWidget(self.hideOpacityTimeColumnsBtn)
+        #self.hideOpacityTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        #layout.addLayout(opacityButtonLayout)
+        #layout.addWidget(self.opacityView)
+        #self.opacityTab.setLayout(layout)
 
         # Lifetime tab layout
-        layout = QVBoxLayout()
-        layout.addWidget(self.lifetimeView)
-        self.lifetimeTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #layout.addWidget(self.lifetimeView)
+        #self.lifetimeTab.setLayout(layout)
 
         # Size Scale tab layout
-        layout = QVBoxLayout()
-        sizeButtonLayout = QHBoxLayout()
-        sizeButtonLayout.addWidget(self.hideSizeTimeColumnsBtn)
-        self.hideSizeTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        layout.addLayout(sizeButtonLayout)
-        layout.addWidget(self.sizeView)
-        self.sizeTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #sizeButtonLayout = QHBoxLayout()
+        #sizeButtonLayout.addWidget(self.hideSizeTimeColumnsBtn)
+        #self.hideSizeTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        #layout.addLayout(sizeButtonLayout)
+        #layout.addWidget(self.sizeView)
+        #self.sizeTab.setLayout(layout)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.positionView)
-        self.positionTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #layout.addWidget(self.positionView)
+        #self.positionTab.setLayout(layout)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.rotationView)
-        self.rotationTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #layout.addWidget(self.rotationView)
+        #self.rotationTab.setLayout(layout)
 
-        self.tabWidget.addTab(self.colorTab, "Color")
-        self.tabWidget.addTab(self.opacityTab, "Opacity")
-        self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
-        self.tabWidget.addTab(self.sizeTab, "Size Scale")
-        self.tabWidget.addTab(self.positionTab, "Emitter Offset")
-        self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
+        #self.tabWidget.addTab(self.colorTab, "Color")
+        #self.tabWidget.addTab(self.opacityTab, "Opacity")
+        #self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
+        #self.tabWidget.addTab(self.sizeTab, "Size Scale")
+        #self.tabWidget.addTab(self.positionTab, "Emitter Offset")
+        #self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
 
         widget = QWidget()
         widget.setLayout(self.layout)
@@ -961,12 +1390,12 @@ class MainWindow(QMainWindow):
 
     def initTabWidget(self):
         self.tabWidget = QTabWidget(self)
-        self.colorTab = QWidget(self.tabWidget)
-        self.opacityTab = QWidget(self.tabWidget)
-        self.lifetimeTab = QWidget(self.tabWidget)
-        self.sizeTab = QWidget(self.tabWidget)
-        self.positionTab = QWidget(self.tabWidget)
-        self.rotationTab = QWidget(self.tabWidget)
+        #self.colorTab = QWidget(self.tabWidget)
+        #self.opacityTab = QWidget(self.tabWidget)
+        #self.lifetimeTab = QWidget(self.tabWidget)
+        #self.sizeTab = QWidget(self.tabWidget)
+        #self.positionTab = QWidget(self.tabWidget)
+        #self.rotationTab = QWidget(self.tabWidget)
 
     def initMenuBar(self):
         menu_bar = self.menuBar()
@@ -975,9 +1404,13 @@ class MainWindow(QMainWindow):
 
         self.fileOpenArchiveAction = QAction("Open", self)
         self.fileSaveArchiveAction = QAction("Save", self)
+        self.fileLoadProjectAction = QAction("Open Project", self)
+        self.fileSaveProjectAction = QAction("Save Project", self)
 
         self.file_menu.addAction(self.fileOpenArchiveAction)
         self.file_menu.addAction(self.fileSaveArchiveAction)
+        self.file_menu.addAction(self.fileLoadProjectAction)
+        self.file_menu.addAction(self.fileSaveProjectAction)
 
         self.edit_menu = menu_bar.addMenu("Edit")
         self.undo_action = self.undoStack.createUndoAction(self, "Undo")
@@ -986,34 +1419,107 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcut(QKeySequence.Redo)
         self.edit_menu.addAction(self.undo_action)
         self.edit_menu.addAction(self.redo_action)
+        
+    def loadFromStream(self, filepath: str, stream: MemoryStream):
+        self.particleEffectData = stream
+        self.reloadData()
+        self.setLoadedFileLabels(filepath)
+        
+    def setLoadedFileLabels(self, filepath):
+        self.statusBar().showMessage(f"Loaded: {os.path.basename(filepath)}", 5000)
+        stat = os.stat(filepath)
+        modified_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
+
+        self.filenameLabel.setText(f"{os.path.basename(filepath)} — last modified: {modified_time}")
+        
+    def reloadData(self):
+        self.particleEffectData.seek(0)
+        self.particleEffect = ParticleEffect()
+        self.particleEffect.from_memory_stream(self.particleEffectData)
+        self.tabWidget.clear()
+        count = 0
+        for particleSystem in self.particleEffect.particle_systems:
+            if particleSystem.is_rendering():
+                if particleSystem.visualizer_offset != particleSystem.size:
+                    particleSystemView = ParticleSystemView(particleSystem)
+                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
+                else:
+                    particleSystemView = ParticleSystemView(particleSystem, trailSpawner=count+1)
+                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
+                count += 1
+                
+    def saveProject(self, initialdir: str | None = '', outputFile: str | None = ""):
+        if not outputFile:
+            outputFile = QFileDialog.getSaveFileName(self, "Save File", str(initialdir), "Particle Mod (*.pmod)")
+            outputFile = outputFile[0]
+        if not outputFile:
+            return
+        loadedFiles = self.loadedFilesWindow.getAllLoadedFiles()
+        for fileWidget in loadedFiles:
+            print(f"Filepath: {fileWidget.filepath}" + "\n" + f"Note: {fileWidget.note}")
+        root = ET.Element("root")
+        project = ET.SubElement(root, "project", name="default project")
+        projectFiles = ET.SubElement(project, "project_files")
+        for fileWidget in loadedFiles:
+            file = ET.SubElement(projectFiles, "file")
+            ET.SubElement(file, "filepath").text = fileWidget.filepath
+            ET.SubElement(file, "note").text = fileWidget.note
+        tree = ET.ElementTree(root)
+        tree.write(outputFile)
+        
+    def loadProject(self, initialdir: str | None = '', projectFile: str | None = ""):
+        if not projectFile:
+            projectFile = QFileDialog.getOpenFileName(self, "Select Project File", str(initialdir), "Particle Mod (*.pmod)")
+            projectFile = projectFile[0]
+        if not projectFile:
+            return
+        self.clearLoadedFiles()
+        tree = ET.parse(projectFile)
+        root = tree.getroot()
+        for project in root:
+            print(project.attrib)
+            projectFiles = project.find('project_files')
+            for file in projectFiles:
+                filepath = file.find('filepath').text
+                note = file.find('note').text
+                with open(filepath, 'rb') as f:
+                    fileData = MemoryStream(f.read())
+                self.addLoadedFile(filepath, fileData, note)
+            break # support for multiple projects may be added later
+            
+    def clearLoadedFiles(self):
+        self.loadedFilesWindow.clear()
+        
+    def addLoadedFile(self, filepath: str, fileData: MemoryStream, note: str=""):
+        self.loadedFilesWindow.addFile(filepath, fileData, note)
 
     def load_archive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
             archive_file = QFileDialog.getOpenFileName(self, "Select archive", str(initialdir), "All Files (*.*)")
             archive_file = archive_file[0]
-            self.filenameLabel.setText(f"File: {os.path.basename(archive_file)}")
         if not archive_file:
             return
         self.name = archive_file
         with open(archive_file, "rb") as f:
-            self.data = f.read()
-            self.colorViewModel.setFileData(self.data)
-            self.opacityViewModel.setFileData(self.data)
-            self.lifetimeViewModel.setFileData(self.data)
-            self.sizeViewModel.setFileData(self.data)
-            self.positionViewModel.setFileData(self.data)
-            self.rotationViewModel.setFileData(self.data)
+            self.particleEffectData = MemoryStream(f.read())
+        self.reloadData()
+        self.addLoadedFile(archive_file, self.particleEffectData)
+        self.setLoadedFileLabels(archive_file)
+        '''    
+        self.colorViewModel.setFileData(self.data)
+        self.opacityViewModel.setFileData(self.data)
+        self.lifetimeViewModel.setFileData(self.data)
+        self.sizeViewModel.setFileData(self.data)
+        self.positionViewModel.setFileData(self.data)
+        self.rotationViewModel.setFileData(self.data)
 
-            # Reapply hidden column states
-            self.applyHiddenColumns('color', self.colorView)
-            self.applyHiddenColumns('opacity', self.opacityView)
-            self.applyHiddenColumns('size', self.sizeView)
-            self.statusBar().showMessage(f"Loaded: {os.path.basename(self.name)}", 5000)
-            stat = os.stat(archive_file)
-            modified_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
-
-            self.filenameLabel.setText(f"{os.path.basename(archive_file)} — last modified: {modified_time}")
-
+        # Reapply hidden column states
+        self.applyHiddenColumns('color', self.colorView)
+        self.applyHiddenColumns('opacity', self.opacityView)
+        self.applyHiddenColumns('size', self.sizeView)
+        '''
+        
+        
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
             archive_file = QFileDialog.getSaveFileName(self, "Select archive", self.name)
@@ -1021,15 +1527,17 @@ class MainWindow(QMainWindow):
         if not archive_file:
             return
         with open(archive_file, "wb") as f:
-            data = MemoryStream()
-            data.write(self.data)
-            self.colorViewModel.writeFileData(data)
-            self.lifetimeViewModel.writeFileData(data)
-            self.opacityViewModel.writeFileData(data)
-            self.sizeViewModel.writeFileData(data)
-            self.positionViewModel.writeFileData(data)
-            self.rotationViewModel.writeFileData(data)
-            f.write(data.data)
+            self.particleEffect.write_to_memory_stream(self.particleEffectData)
+            f.write(self.particleEffectData.data)
+            #data = MemoryStream()
+            #data.write(self.data)
+            #self.colorViewModel.writeFileData(data)
+            #self.lifetimeViewModel.writeFileData(data)
+            #self.opacityViewModel.writeFileData(data)
+            #self.sizeViewModel.writeFileData(data)
+            #self.positionViewModel.writeFileData(data)
+            #self.rotationViewModel.writeFileData(data)
+            #f.write(data.data)
 
             self.statusBar().showMessage(f"Saved: {os.path.basename(archive_file)}", 5000)
 
