@@ -6,7 +6,8 @@ from functools import partial
 import xml.etree.cElementTree as ET
 
 from PySide6.QtCore import Qt, QRect, QAbstractItemModel, Signal, QXmlStreamWriter, QXmlStreamReader
-from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon, QDoubleValidator, QValidator
+from PySide6.QtCharts import QLineSeries, QChart, QChartView, QValueAxis
+from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon, QDoubleValidator, QValidator, QPen, QIntValidator
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVBoxLayout, \
     QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox, QFileSystemModel, QLineEdit, QTreeWidget, QTreeWidgetItem
 from scipy.spatial.transform import Rotation
@@ -160,8 +161,8 @@ class Emitter:
             burst_graph.from_memory_stream(stream)
             self.burst_graph = burst_graph
         elif self.emitter_type == Emitter.RATE:
-            self.initial_rate_min = stream.uint32_read()
-            self.initial_rate_max = stream.uint32_read()
+            self.initial_rate_min = stream.float32_read()
+            self.initial_rate_max = stream.float32_read()
             rate_graph = Graph()
             rate_graph.from_memory_stream(stream)
             self.rate_graph = rate_graph
@@ -170,15 +171,9 @@ class Emitter:
         stream.advance(4)
         if self.emitter_type == Emitter.BURST:
             self.burst_graph.write_to_memory_stream(stream)
-            burst_graph = BurstEmitterGraph()
-            burst_graph.from_memory_stream(stream)
-            self.burst_graph = burst_graph
         elif self.emitter_type == Emitter.RATE:
-            self.initial_rate_min = stream.uint32_read()
-            self.initial_rate_max = stream.uint32_read()
-            rate_graph = Graph()
-            rate_graph.from_memory_stream(stream)
-            self.rate_graph = rate_graph
+            stream.write(struct.pack("<ff", self.initial_rate_min, self.initial_rate_max))
+            rate_graph.write_to_memory_stream(stream)
         
 
 class ParticleSystem:
@@ -202,7 +197,10 @@ class ParticleSystem:
         self.scale_graphs.clear()
         self.opacity_graphs.clear()
         self.color_graphs.clear()
-        self.graph_offsets.clear()
+        self.color_graph_offsets.clear()
+        self.other_graphs.clear()
+        self.other_graph_offsets.clear()
+        self.emitters.clear()
         self.offset = stream.tell()
         self.max_num_particles = stream.uint32_read()
         self.num_components = stream.uint32_read()
@@ -217,7 +215,9 @@ class ParticleSystem:
         self.position = EmitterPosition.fromBytes(stream.read(12))
         self.unk3 = stream.read(52)
         self.component_list_offset = stream.uint32_read()
-        self.unk4 = stream.read(16)
+        self.unk4 = stream.read(4)
+        self.emitter_offset = stream.uint32_read()
+        self.unk5 = stream.read(8)
         self.visualizer_offset = stream.uint32_read()
         self.size = stream.uint32_read()
         if not self.is_rendering():
@@ -228,19 +228,23 @@ class ParticleSystem:
             return
             
         # get emitters
+        stream.seek(self.offset + self.emitter_offset)
         stop = False
         while not stop:
             emitter_type = stream.uint32_read()
             while emitter_type not in [Emitter.BURST, Emitter.RATE]:
                 emitter_type = stream.uint32_read()
-                if stream.tell() == self.offset + self.visualizer_offset:
+                if stream.tell() >= self.offset + self.visualizer_offset:
                     stop = True
                     break
-            stream.advance(-4)
-            self.emitter_offsets.append(stream.tell())
-            emitter = Emitter()
-            emitter.from_memory_stream(stream)
-            self.emitters.append(emitter)
+            if not stop:
+                stream.advance(-4)
+                self.emitter_offsets.append(stream.tell())
+                emitter = Emitter()
+                emitter.from_memory_stream(stream)
+                if stream.tell() >= self.offset + self.visualizer_offset:
+                    break
+                self.emitters.append(emitter)
             
         # get visualizer
         stream.seek(self.offset + self.visualizer_offset)
@@ -303,6 +307,8 @@ class ParticleSystem:
         stream.write(self.unk3)
         stream.write(struct.pack("<I", self.component_list_offset))
         stream.write(self.unk4)
+        stream.write(struct.pack("<I", self.emitter_offset))
+        stream.write(self.unk5)
         stream.write(struct.pack("<II", self.visualizer_offset, self.size))
         if self.non_rendering != 0:
             stream.seek(self.offset + self.size)
@@ -490,6 +496,90 @@ class MemoryStream:
         
     def float32_read(self):
         return self.read_format('f', 4)
+
+
+class EmitterView(QWidget):
+    
+    def __init__(self, emitters: list[Emitter], parent=None):
+        super().__init__(parent)
+        
+        self.emitters = emitters
+        
+        self.layout = QVBoxLayout()
+        
+        for emitter in sorted(self.emitters, key=lambda e: e.emitter_type):
+            if emitter.emitter_type == Emitter.RATE:
+                chart = QChart()
+                chart.setTitle("Rate over time")
+                series = QLineSeries()
+                series.setName("Rate")
+                pen = QPen(0xFF0000)
+                pen.setWidth(5)
+                series.setPen(pen)
+                for x, y in zip(emitter.rate_graph.x, emitter.rate_graph.y):
+                    if not x == 10000:
+                        series.append(x, y)
+                chart.addSeries(series)
+                chart.legend().hide()
+                chart.createDefaultAxes()
+                chart.axes(Qt.Orientation.Horizontal)[0].setRange(0, 1)
+                chart.axes(Qt.Orientation.Horizontal)[0].setTickCount(2)
+                chart.axes(Qt.Orientation.Vertical)[0].setRange(0, 1)
+                chart.axes(Qt.Orientation.Vertical)[0].setTickCount(2)
+                chartView = QChartView(chart)
+                chartView.setFixedWidth(200)
+                chartView.setFixedHeight(200)
+                self.emitterLayout = QHBoxLayout()
+                self.emitterLayout2 = QVBoxLayout()
+                emitterLabel = QLabel(f"Rate Emitter", self)
+                self.emitterLayout.addWidget(emitterLabel)
+                emitterLabelMin = QLabel("Min: ", self)
+                emitterLabelMax = QLabel("Max: ", self)
+                emitterEditMin = QLineEdit(self)
+                emitterEditMin.setFixedWidth(130)
+                emitterEditMin.setText(str(emitter.initial_rate_min))
+                emitterEditMin.setValidator(QDoubleValidator())
+                emitterEditMax = QLineEdit(self)
+                emitterEditMax.setFixedWidth(130)
+                emitterEditMax.setText(str(emitter.initial_rate_max))
+                emitterEditMax.setValidator(QDoubleValidator())
+                self.emitterLayout.addWidget(emitterLabelMin)
+                self.emitterLayout.addWidget(emitterEditMin)
+                self.emitterLayout.addWidget(emitterLabelMax)
+                self.emitterLayout.addWidget(emitterEditMax)
+                self.emitterLayout.addStretch(1)
+                self.emitterLayout2.addLayout(self.emitterLayout)
+                self.emitterLayout2.addWidget(chartView)
+                self.layout.addLayout(self.emitterLayout2)
+            elif emitter.emitter_type == Emitter.BURST:
+                self.emitterLayout = QVBoxLayout()
+                emitterLabel = QLabel(f"Burst Emitter", self)
+                self.emitterLayout.addWidget(emitterLabel)
+                self.titleLayout = QHBoxLayout()
+                self.titleLayout.addWidget(QLabel("Time"))
+                self.titleLayout.addWidget(QLabel("Min Burst"))
+                self.titleLayout.addWidget(QLabel("Max Burst"))
+                self.emitterLayout.addLayout(self.titleLayout)
+                for time, value in zip(emitter.burst_graph.times, emitter.burst_graph.num_particles):
+                    min = value[0]
+                    max = value[1]
+                    self.rowLayout = QHBoxLayout()
+                    timeEdit = QLineEdit()
+                    timeEdit.setText(str(time))
+                    timeEdit.setValidator(QDoubleValidator())
+                    self.rowLayout.addWidget(timeEdit)
+                    minEdit = QLineEdit()
+                    minEdit.setText(str(min))
+                    minEdit.setValidator(QIntValidator())
+                    self.rowLayout.addWidget(minEdit)
+                    maxEdit = QLineEdit()
+                    maxEdit.setText(str(max))
+                    maxEdit.setValidator(QIntValidator())
+                    self.rowLayout.addWidget(maxEdit)
+                    self.emitterLayout.addLayout(self.rowLayout)
+                self.layout.addLayout(self.emitterLayout)
+        self.layout.addStretch(1)
+        self.setLayout(self.layout)
         
 class ParticleSystemView(QWidget):
     
@@ -502,9 +592,12 @@ class ParticleSystemView(QWidget):
         self.particleSystem = particleSystem
         
         self.layout = QVBoxLayout()
+        
+        self.emitterView = EmitterView(self.particleSystem.emitters)
+        self.layout.addWidget(self.emitterView)
+        
         if trailSpawner == -1:
             self.visualizerView = VisualizerView(self.particleSystem.visualizer)
-            
             self.layout.addWidget(self.visualizerView)
             
         else:
@@ -1337,6 +1430,7 @@ class LoadedFileWidget(QWidget):
         
     def load(self):
         self.openClicked.emit(self.filepath, self.fileData, self.particleEffect)
+
 
 class MainWindow(QMainWindow):
 
