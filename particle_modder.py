@@ -129,13 +129,68 @@ class ColorGraph:
         stream.write(struct.pack("<ffffffffff", *self.x))
         for color in self.y:
             stream.write(struct.pack("<fff", *color))
+            
+class BurstEmitterGraph:
+    
+    def __init__(self):
+        self.times = []
+        self.num_particles = []
+        
+    def from_memory_stream(self, stream):
+        for _ in range(10):
+            self.times.append(stream.float32_read())
+            self.num_particles.append((stream.uint32_read(), stream.uint32_read()))
+        
+    def write_to_memory_stream(self, stream):
+        for i in range(10):
+            stream.write(struct.pack("<fII", self.times[i], self.num_particles[i][0], self.num_particles[i][1]))
+
+class Emitter:
+    
+    BURST = 0x0C
+    RATE = 0x0B
+    
+    def __init__(self):
+        pass
+        
+    def from_memory_stream(self, stream):
+        self.emitter_type = stream.uint32_read()
+        if self.emitter_type == Emitter.BURST:
+            burst_graph = BurstEmitterGraph()
+            burst_graph.from_memory_stream(stream)
+            self.burst_graph = burst_graph
+        elif self.emitter_type == Emitter.RATE:
+            self.initial_rate_min = stream.uint32_read()
+            self.initial_rate_max = stream.uint32_read()
+            rate_graph = Graph()
+            rate_graph.from_memory_stream(stream)
+            self.rate_graph = rate_graph
+            
+    def write_to_memory_stream(self, stream):
+        stream.advance(4)
+        if self.emitter_type == Emitter.BURST:
+            self.burst_graph.write_to_memory_stream(stream)
+            burst_graph = BurstEmitterGraph()
+            burst_graph.from_memory_stream(stream)
+            self.burst_graph = burst_graph
+        elif self.emitter_type == Emitter.RATE:
+            self.initial_rate_min = stream.uint32_read()
+            self.initial_rate_max = stream.uint32_read()
+            rate_graph = Graph()
+            rate_graph.from_memory_stream(stream)
+            self.rate_graph = rate_graph
+        
 
 class ParticleSystem:
     def __init__(self):
         self.scale_graphs = []
         self.opacity_graphs = []
         self.color_graphs = []
-        self.graph_offsets = []
+        self.color_graph_offsets = []
+        self.other_graph_offsets = []
+        self.other_graphs = []
+        self.emitter_offsets = []
+        self.emitters = []
         self.visualizer = None
         self.offset = 0
         self.max_num_particles = 0
@@ -171,29 +226,70 @@ class ParticleSystem:
         if self.visualizer_offset == self.size:
             stream.seek(self.offset + self.size)
             return
+            
+        # get emitters
+        stop = False
+        while not stop:
+            emitter_type = stream.uint32_read()
+            while emitter_type not in [Emitter.BURST, Emitter.RATE]:
+                emitter_type = stream.uint32_read()
+                if stream.tell() == self.offset + self.visualizer_offset:
+                    stop = True
+                    break
+            stream.advance(-4)
+            self.emitter_offsets.append(stream.tell())
+            emitter = Emitter()
+            emitter.from_memory_stream(stream)
+            self.emitters.append(emitter)
+            
+        # get visualizer
         stream.seek(self.offset + self.visualizer_offset)
         visualizer = Visualizer()
         visualizer.from_memory_stream(stream)
         self.visualizer = visualizer
+        
+        # get graphs
         while True:
             graph_type = stream.uint32_read()
-            while graph_type != 0x05:
+            while graph_type not in [0x05, 0x04, 0x0F]:
                 graph_type = stream.uint32_read()
                 if stream.tell() == self.offset + self.size:
                     return
-            stream.advance(8)
-            self.graph_offsets.append(stream.tell())
-            scale = Graph()
-            scale.from_memory_stream(stream)
-            scale.from_memory_stream(stream)
-            self.scale_graphs.append(scale)
-            opacity = Graph()
-            opacity.from_memory_stream(stream)
-            opacity.from_memory_stream(stream)
-            self.opacity_graphs.append(opacity)
-            color = ColorGraph()
-            color.from_memory_stream(stream)
-            self.color_graphs.append(color)
+            if graph_type == 0x05: #non-light visualizer
+                stream.advance(8)
+                self.color_graph_offsets.append(stream.tell())
+                scale = Graph()
+                scale.from_memory_stream(stream)
+                scale.from_memory_stream(stream)
+                self.scale_graphs.append(scale)
+                opacity = Graph()
+                opacity.from_memory_stream(stream)
+                opacity.from_memory_stream(stream)
+                self.opacity_graphs.append(opacity)
+                color = ColorGraph()
+                color.from_memory_stream(stream)
+                self.color_graphs.append(color)
+            elif graph_type == 0x0F: # light visualizer only
+                stream.advance(8)
+                self.color_graph_offsets.append(stream.tell())
+                scale = None
+                #scale.from_memory_stream(stream)
+                #scale.from_memory_stream(stream)
+                self.scale_graphs.append(scale)
+                opacity = Graph()
+                opacity.from_memory_stream(stream)
+                opacity.from_memory_stream(stream)
+                self.opacity_graphs.append(opacity)
+                color = ColorGraph()
+                color.from_memory_stream(stream)
+                self.color_graphs.append(color)
+            elif graph_type == 0x04:
+                stream.advance(16)
+                self.other_graph_offsets.append(stream.tell())
+                unk_graph = Graph()
+                unk_graph.from_memory_stream(stream)
+                unk_graph.from_memory_stream(stream)
+                self.other_graphs.append(unk_graph)
             
         stream.seek(self.offset + self.size)
         
@@ -214,6 +310,11 @@ class ParticleSystem:
         if self.visualizer_offset == self.size:
             stream.seek(self.offset + self.size)
             return
+            
+        for index, offset in enumerate(self.emitter_offsets):
+            stream.seek(offset)
+            self.emitters[index].write_to_memory_stream(stream)
+            
         stream.seek(self.offset + self.visualizer_offset)
         self.visualizer.write_to_memory_stream(stream)
         for index, offset in enumerate(self.graph_offsets):
@@ -223,9 +324,12 @@ class ParticleSystem:
             self.opacity_graphs[index].write_to_memory_stream(stream)
             self.opacity_graphs[index].write_to_memory_stream(stream)
             self.color_graphs[index].write_to_memory_stream(stream)
+        for index, offset in enumerate(self.other_graph_offsets):
+            stream.seek(offset)
+            self.other_graphs[index].write_to_memory_stream(stream)
+            self.other_graphs[index].write_to_memory_stream(stream)
         
         
-    
 class ParticleEffectVariable:
     def __init__(self):
         self.name_hash = 0
@@ -410,6 +514,70 @@ class ParticleSystemView(QWidget):
         self.layout.addStretch(1)
         self.setLayout(self.layout)
         
+class ParticleEffectView(QWidget):
+    '''
+    Container for showing a particle effect. Includes tab widget for each particle system plus info about the overall effect (lifetime)
+    '''
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout()
+        
+        # particle effect data
+        lifetimeWidth = 100
+        self.lifetimeWidget = QWidget(self)
+        self.lifetimeLayout = QHBoxLayout()
+        self.lifetimeLabel1 = QLabel("Lifetime: ", self)
+        self.lifetimeLabel2 = QLabel(" - ", self)
+        self.lifetimeLabel3 = QLabel(" seconds", self)
+        self.lifetimeValidator = QDoubleValidator()
+        self.lifetimeMinEdit = QLineEdit(self)
+        self.lifetimeMinEdit.setValidator(self.lifetimeValidator)
+        self.lifetimeMinEdit.editingFinished.connect(self.setLifetime)
+        self.lifetimeMinEdit.setFixedWidth(lifetimeWidth)
+        self.lifetimeMaxEdit = QLineEdit(self)
+        self.lifetimeMaxEdit.setValidator(self.lifetimeValidator)
+        self.lifetimeMaxEdit.editingFinished.connect(self.setLifetime)
+        self.lifetimeMaxEdit.setFixedWidth(lifetimeWidth)
+        self.lifetimeLayout.addWidget(self.lifetimeLabel1)
+        self.lifetimeLayout.addWidget(self.lifetimeMinEdit)
+        self.lifetimeLayout.addWidget(self.lifetimeLabel2)
+        self.lifetimeLayout.addWidget(self.lifetimeMaxEdit)
+        self.lifetimeLayout.addWidget(self.lifetimeLabel3)
+        self.lifetimeLayout.addStretch(1)
+        self.lifetimeWidget.setLayout(self.lifetimeLayout)
+        
+        self.layout.addWidget(self.lifetimeWidget)
+        
+        # tabs for the particle systems
+        self.tabWidget = QTabWidget(self)
+                
+        self.layout.addWidget(self.tabWidget)
+                
+        self.setLayout(self.layout)
+        
+    def loadData(self, particleEffect):
+        self.particleEffect = particleEffect
+        
+        self.lifetimeMinEdit.setText(str(self.particleEffect.min_lifetime))
+        self.lifetimeMaxEdit.setText(str(self.particleEffect.max_lifetime))
+        
+        self.tabWidget.clear()
+        count = 0
+        for particleSystem in self.particleEffect.particle_systems:
+            if particleSystem.is_rendering():
+                if particleSystem.visualizer_offset != particleSystem.size:
+                    particleSystemView = ParticleSystemView(particleSystem)
+                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
+                else:
+                    particleSystemView = ParticleSystemView(particleSystem, trailSpawner=count+1)
+                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
+                count += 1
+        
+    def setLifetime(self):
+        self.particleEffect.min_lifetime = float(self.lifetimeMinEdit.text())
+        self.particleEffect.max_lifetime = float(self.lifetimeMaxEdit.text())
+
 class BigIntValidator(QDoubleValidator):
     def __init__(self, bottom=float('-inf'), top=float('inf')):
         super(BigIntValidator, self).__init__(bottom, top, 0)
@@ -1091,7 +1259,7 @@ class ColorSwatchDelegate(QStyledItemDelegate):
         
 class LoadedFilesWindow(QWidget):
     
-    loadFile = Signal(str, MemoryStream)
+    loadFile = Signal(str, MemoryStream, ParticleEffect)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1104,8 +1272,8 @@ class LoadedFilesWindow(QWidget):
         
         self.setLayout(self.layout)
         
-    def addFile(self, filepath, fileData, note=""):
-        fileWidget = LoadedFileWidget(filepath, fileData, note=note)
+    def addFile(self, filepath, fileData, effect, note=""):
+        fileWidget = LoadedFileWidget(filepath, fileData, effect, note=note)
         fileWidget.openClicked.connect(self.load)
         fileWidget.removeClicked.connect(self.remove)
         item = QTreeWidgetItem(self.treeWidget)
@@ -1122,8 +1290,8 @@ class LoadedFilesWindow(QWidget):
     def remove(self, item):
         (item.parent() or self.treeWidget.invisibleRootItem()).removeChild(item)
         
-    def load(self, filepath: str, fileData: MemoryStream):
-        self.loadFile.emit(filepath, fileData)
+    def load(self, filepath: str, fileData: MemoryStream, particleEffect: ParticleEffect):
+        self.loadFile.emit(filepath, fileData, particleEffect)
         
     def clear(self):
         self.treeWidget.clear()
@@ -1131,13 +1299,14 @@ class LoadedFilesWindow(QWidget):
         
 class LoadedFileWidget(QWidget):
     
-    openClicked = Signal(str, MemoryStream)
+    openClicked = Signal(str, MemoryStream, ParticleEffect)
     removeClicked = Signal(QTreeWidgetItem)
     
-    def __init__(self, filepath, fileData, note="", parent=None):
+    def __init__(self, filepath, fileData, effect, note="", parent=None):
         super().__init__(parent)
         self.filepath = filepath
         self.fileData = fileData
+        self.particleEffect = effect
         self.note = note
         
         self.layout = QHBoxLayout()
@@ -1167,7 +1336,7 @@ class LoadedFileWidget(QWidget):
         self.removeClicked.emit(self.item)
         
     def load(self):
-        self.openClicked.emit(self.filepath, self.fileData)
+        self.openClicked.emit(self.filepath, self.fileData, self.particleEffect)
 
 class MainWindow(QMainWindow):
 
@@ -1191,7 +1360,8 @@ class MainWindow(QMainWindow):
 
     def initComponents(self):
         self.initMenuBar()
-        self.initTabWidget()
+        self.initFilesWindow()
+        self.initParticleView()
         #self.initColorView()
         #self.initOpacityView()
         #self.initLifetimeView()
@@ -1204,6 +1374,8 @@ class MainWindow(QMainWindow):
         self.fileSaveArchiveAction.triggered.connect(self.saveArchive)
         self.fileSaveProjectAction.triggered.connect(self.saveProject)
         self.fileLoadProjectAction.triggered.connect(self.loadProject)
+        
+        self.loadedFilesWindow.loadFile.connect(self.loadFromStream)
 
     def layoutComponents(self):
         self.setMinimumSize(300, 200)
@@ -1238,12 +1410,11 @@ class MainWindow(QMainWindow):
             background-color: #434343;
         """)
         
-        self.loadedFilesWindow = LoadedFilesWindow(self)
-        self.loadedFilesWindow.loadFile.connect(self.loadFromStream)
+        
         
         self.layout.addWidget(filenameStrip)
         self.splitter.addWidget(self.loadedFilesWindow)
-        self.splitter.addWidget(self.tabWidget)
+        self.splitter.addWidget(self.particleEffectView)
         self.layout.addWidget(self.splitter)
         self.layout.addStretch(1)
         #self.layout.addWidget(self.tabWidget)
@@ -1299,6 +1470,12 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         widget.setLayout(self.layout)
         self.setCentralWidget(widget)
+        
+    def initParticleView(self):
+        self.particleEffectView = ParticleEffectView(self)
+        
+    def initFilesWindow(self):
+        self.loadedFilesWindow = LoadedFilesWindow(self)
 
     def initColorView(self):
         self.colorView = ColorTable(self)
@@ -1404,11 +1581,13 @@ class MainWindow(QMainWindow):
 
         self.fileOpenArchiveAction = QAction("Open", self)
         self.fileSaveArchiveAction = QAction("Save", self)
-        self.fileLoadProjectAction = QAction("Open Project", self)
-        self.fileSaveProjectAction = QAction("Save Project", self)
+        self.fileSaveAllFilesAction= QAction("Save All", self)
+        self.fileLoadProjectAction = QAction("Open Project File", self)
+        self.fileSaveProjectAction = QAction("Save Project File", self)
 
         self.file_menu.addAction(self.fileOpenArchiveAction)
         self.file_menu.addAction(self.fileSaveArchiveAction)
+        self.file_menu.addAction(self.fileSaveAllFilesAction)
         self.file_menu.addAction(self.fileLoadProjectAction)
         self.file_menu.addAction(self.fileSaveProjectAction)
 
@@ -1420,8 +1599,9 @@ class MainWindow(QMainWindow):
         self.edit_menu.addAction(self.undo_action)
         self.edit_menu.addAction(self.redo_action)
         
-    def loadFromStream(self, filepath: str, stream: MemoryStream):
+    def loadFromStream(self, filepath: str, stream: MemoryStream, particleEffect: ParticleEffect):
         self.particleEffectData = stream
+        self.particleEffect = particleEffect
         self.reloadData()
         self.setLoadedFileLabels(filepath)
         
@@ -1433,20 +1613,7 @@ class MainWindow(QMainWindow):
         self.filenameLabel.setText(f"{os.path.basename(filepath)} — last modified: {modified_time}")
         
     def reloadData(self):
-        self.particleEffectData.seek(0)
-        self.particleEffect = ParticleEffect()
-        self.particleEffect.from_memory_stream(self.particleEffectData)
-        self.tabWidget.clear()
-        count = 0
-        for particleSystem in self.particleEffect.particle_systems:
-            if particleSystem.is_rendering():
-                if particleSystem.visualizer_offset != particleSystem.size:
-                    particleSystemView = ParticleSystemView(particleSystem)
-                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
-                else:
-                    particleSystemView = ParticleSystemView(particleSystem, trailSpawner=count+1)
-                    self.tabWidget.addTab(particleSystemView, f"Particle System {count}")
-                count += 1
+        self.particleEffectView.loadData(self.particleEffect)
                 
     def saveProject(self, initialdir: str | None = '', outputFile: str | None = ""):
         if not outputFile:
@@ -1455,8 +1622,6 @@ class MainWindow(QMainWindow):
         if not outputFile:
             return
         loadedFiles = self.loadedFilesWindow.getAllLoadedFiles()
-        for fileWidget in loadedFiles:
-            print(f"Filepath: {fileWidget.filepath}" + "\n" + f"Note: {fileWidget.note}")
         root = ET.Element("root")
         project = ET.SubElement(root, "project", name="default project")
         projectFiles = ET.SubElement(project, "project_files")
@@ -1466,6 +1631,18 @@ class MainWindow(QMainWindow):
             ET.SubElement(file, "note").text = fileWidget.note
         tree = ET.ElementTree(root)
         tree.write(outputFile)
+        
+    def saveProjectFiles(self):
+        projectFiles = self.loadedFilesWindow.getAllLoadedFiles()
+        for fileWidget in loadedFiles:
+            path = fileWidget.filepath
+            stream = fileWidget.fileData
+            particleEffect = fileWidget.particleEffect
+            stream.seek(0)
+            particleEffect.write_to_memory_stream(stream)
+            with open(path, 'wb') as f:
+                f.write(stream.data)
+        self.statusBar().showMessage(f"Saved all particle files", 3000)
         
     def loadProject(self, initialdir: str | None = '', projectFile: str | None = ""):
         if not projectFile:
@@ -1477,21 +1654,24 @@ class MainWindow(QMainWindow):
         tree = ET.parse(projectFile)
         root = tree.getroot()
         for project in root:
-            print(project.attrib)
             projectFiles = project.find('project_files')
             for file in projectFiles:
                 filepath = file.find('filepath').text
+                if not os.path.exists(filepath):
+                    continue
                 note = file.find('note').text
                 with open(filepath, 'rb') as f:
                     fileData = MemoryStream(f.read())
-                self.addLoadedFile(filepath, fileData, note)
+                particleEffect = ParticleEffect()
+                particleEffect.from_memory_stream(fileData)
+                self.addLoadedFile(filepath, fileData, particleEffect, note)
             break # support for multiple projects may be added later
             
     def clearLoadedFiles(self):
         self.loadedFilesWindow.clear()
         
-    def addLoadedFile(self, filepath: str, fileData: MemoryStream, note: str=""):
-        self.loadedFilesWindow.addFile(filepath, fileData, note)
+    def addLoadedFile(self, filepath: str, fileData: MemoryStream, particleEffect: ParticleEffect, note: str=""):
+        self.loadedFilesWindow.addFile(filepath, fileData, particleEffect, note)
 
     def load_archive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
@@ -1499,11 +1679,16 @@ class MainWindow(QMainWindow):
             archive_file = archive_file[0]
         if not archive_file:
             return
+        if os.path.splitext(archive_file)[1] == ".pmod":
+            self.loadProject(projectFile = archive_file)
+            return
         self.name = archive_file
         with open(archive_file, "rb") as f:
             self.particleEffectData = MemoryStream(f.read())
+        self.particleEffect = ParticleEffect()
+        self.particleEffect.from_memory_stream(self.particleEffectData)
         self.reloadData()
-        self.addLoadedFile(archive_file, self.particleEffectData)
+        self.addLoadedFile(archive_file, self.particleEffectData, self.particleEffect)
         self.setLoadedFileLabels(archive_file)
         '''    
         self.colorViewModel.setFileData(self.data)
