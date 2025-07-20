@@ -174,11 +174,7 @@ class Emitter:
             self.burst_graph.write_to_memory_stream(stream)
         elif self.emitter_type == Emitter.RATE:
             stream.write(struct.pack("<ff", self.initial_rate_min, self.initial_rate_max))
-<<<<<<< HEAD
             self.rate_graph.write_to_memory_stream(stream)
-=======
-            rate_graph.write_to_memory_stream(stream)
->>>>>>> 8248e6a55be79ecf0a6afe0cff140a4926cec420
         
 
 class ParticleSystem:
@@ -244,20 +240,13 @@ class ParticleSystem:
                     break
             if not stop:
                 stream.advance(-4)
-<<<<<<< HEAD
                 offset = stream.tell()
-=======
-                self.emitter_offsets.append(stream.tell())
->>>>>>> 8248e6a55be79ecf0a6afe0cff140a4926cec420
                 emitter = Emitter()
                 emitter.from_memory_stream(stream)
                 if stream.tell() >= self.offset + self.visualizer_offset:
                     break
                 self.emitters.append(emitter)
-<<<<<<< HEAD
                 self.emitter_offsets.append(offset)
-=======
->>>>>>> 8248e6a55be79ecf0a6afe0cff140a4926cec420
             
         # get visualizer
         stream.seek(self.offset + self.visualizer_offset)
@@ -614,11 +603,8 @@ class EmitterView(QWidget):
                 self.layout.addLayout(self.emitterLayout)
         self.layout.addStretch(1)
         self.setLayout(self.layout)
-<<<<<<< HEAD
         
         # def setData
-=======
->>>>>>> 8248e6a55be79ecf0a6afe0cff140a4926cec420
         
 class ParticleSystemView(QWidget):
     
@@ -633,11 +619,6 @@ class ParticleSystemView(QWidget):
         self.layout = QVBoxLayout()
         
         self.emitterView = EmitterView(self.particleSystem.emitters)
-<<<<<<< HEAD
-        
-=======
-        self.layout.addWidget(self.emitterView)
->>>>>>> 8248e6a55be79ecf0a6afe0cff140a4926cec420
         
         if trailSpawner == -1:
             self.visualizerView = VisualizerView(self.particleSystem.visualizer)
