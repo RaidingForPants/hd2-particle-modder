@@ -101,7 +101,8 @@ class Visualizer:
             data = struct.pack("<IIIQ", self.visualizer_type, self.unk1, self.unk2, self.material_id) + self.data
             stream.write(data)
         elif self.visualizer_type == Visualizer.LIGHT:
-            stream.write(self.data)
+            data = struct.pack("<I", self.visualizer_type) + self.data
+            stream.write(data)
         elif self.visualizer_type == Visualizer.MESH:
             data = struct.pack("<IQQQ", self.visualizer_type, self.unit_id, self.mesh_id, self.material_id) + self.data
             stream.write(data)
@@ -254,14 +255,24 @@ class ParticleSystem:
         self.visualizer = visualizer
         
         # get graphs
-        while True:
-            graph_type = stream.uint32_read()
-            while graph_type not in [0x05, 0x04, 0x0F]:
-                graph_type = stream.uint32_read()
+        while stream.tell() < self.offset + self.size:
+            while stream.uint32_read() == 0x00:
                 if stream.tell() == self.offset + self.size:
-                    return
-            if graph_type == 0x05: #non-light visualizer
-                stream.advance(8)
+                    break
+            stream.advance(-4)
+            if stream.tell() + 16 > self.offset + self.size:
+                break
+            component_type = [stream.uint32_read() for _ in range(4)]
+            if component_type[0] == 0x04 and component_type[1] >= 0x20: # graph
+                stream.advance(4)
+                self.other_graph_offsets.append(stream.tell())
+                unk_graph = Graph()
+                unk_graph.from_memory_stream(stream)
+                unk_graph.from_memory_stream(stream)
+                self.other_graphs.append(unk_graph)
+            elif component_type[0] == 0x05 and component_type[1] >= 0x20: # color graph
+                # color graph
+                stream.advance(-4)
                 self.color_graph_offsets.append(stream.tell())
                 scale = Graph()
                 scale.from_memory_stream(stream)
@@ -274,8 +285,21 @@ class ParticleSystem:
                 color = ColorGraph()
                 color.from_memory_stream(stream)
                 self.color_graphs.append(color)
-            elif graph_type == 0x0F: # light visualizer only
-                stream.advance(8)
+            elif component_type[1] == 0x05 and component_type[2] >= 0x20: # color graph
+                self.color_graph_offsets.append(stream.tell())
+                scale = Graph()
+                scale.from_memory_stream(stream)
+                scale.from_memory_stream(stream)
+                self.scale_graphs.append(scale)
+                opacity = Graph()
+                opacity.from_memory_stream(stream)
+                opacity.from_memory_stream(stream)
+                self.opacity_graphs.append(opacity)
+                color = ColorGraph()
+                color.from_memory_stream(stream)
+                self.color_graphs.append(color)  
+            elif component_type[0] == 0x0F and component_type[1] >= 0x20: # color graph, no scale
+                stream.advance(-4)
                 self.color_graph_offsets.append(stream.tell())
                 scale = None
                 #scale.from_memory_stream(stream)
@@ -288,13 +312,10 @@ class ParticleSystem:
                 color = ColorGraph()
                 color.from_memory_stream(stream)
                 self.color_graphs.append(color)
-            elif graph_type == 0x04:
-                stream.advance(16)
-                self.other_graph_offsets.append(stream.tell())
-                unk_graph = Graph()
-                unk_graph.from_memory_stream(stream)
-                unk_graph.from_memory_stream(stream)
-                self.other_graphs.append(unk_graph)
+            elif component_type[0] == 0x0B: # some float data
+                stream.advance(12)
+            else:
+                continue
             
         stream.seek(self.offset + self.size)
         
@@ -380,7 +401,7 @@ class ParticleEffect:
             self.particle_systems.append(new_system)
             
     def write_to_memory_stream(self, stream):
-        stream.advance(4)
+        stream.seek(4)
         stream.write(struct.pack("<ff", self.min_lifetime, self.max_lifetime))
         stream.advance(8)
         stream.write(self.num_variables.to_bytes(4, byteorder="little"))
@@ -1710,7 +1731,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Loaded: {os.path.basename(filepath)}", 5000)
         stat = os.stat(filepath)
         modified_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
-
+        self.name = os.path.basename(filepath)
         self.filenameLabel.setText(f"{os.path.basename(filepath)} — last modified: {modified_time}")
         
     def reloadData(self):
