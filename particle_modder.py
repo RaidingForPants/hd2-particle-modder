@@ -5,15 +5,34 @@ import struct
 from functools import partial
 import xml.etree.cElementTree as ET
 
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+from cycler import cycler
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+import math
+import numpy as np
+
+
+
 from PySide6.QtCore import Qt, QRect, QAbstractItemModel, Signal, QXmlStreamWriter, QXmlStreamReader
 from PySide6.QtCharts import QLineSeries, QChart, QChartView, QValueAxis
 from PySide6.QtGui import QStandardItem, QStandardItemModel, QPalette, QColor, QAction, QShortcut, QKeySequence, QIcon, QDoubleValidator, QValidator, QPen, QIntValidator
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVBoxLayout, \
-    QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox, QFileSystemModel, QLineEdit, QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVBoxLayout, QScrollArea, QSizePolicy, \
+    QWidget, QSplitter, QFileDialog, QTabWidget, QColorDialog, QTableView, QStyledItemDelegate, QStyle, QToolButton, QStatusBar, QLabel, QMessageBox, QFileSystemModel, QLineEdit, QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsItem
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 VERSION = 2.0
+
+def clear_layout(layout):
+    if layout is not None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                clear_layout(item.layout())
 
 class EmitterPosition:
 
@@ -77,6 +96,7 @@ class Visualizer:
     BILLBOARD = 0
     LIGHT = 1
     MESH = 2
+    UNKNOWN = 4
     
     def __init__(self):
         pass
@@ -91,8 +111,8 @@ class Visualizer:
         elif self.visualizer_type == Visualizer.LIGHT:
             self.data = stream.read(256)
         elif self.visualizer_type == Visualizer.MESH:
-            self.unit_id = stream.uint64_read()
             self.mesh_id = stream.uint64_read()
+            self.unit_id = stream.uint64_read()
             self.material_id = stream.uint64_read()
             self.data = stream.read(224)
             
@@ -104,7 +124,7 @@ class Visualizer:
             data = struct.pack("<I", self.visualizer_type) + self.data
             stream.write(data)
         elif self.visualizer_type == Visualizer.MESH:
-            data = struct.pack("<IQQQ", self.visualizer_type, self.unit_id, self.mesh_id, self.material_id) + self.data
+            data = struct.pack("<IQQQ", self.visualizer_type, self.mesh_id, self.unit_id, self.material_id) + self.data
             stream.write(data)
         
 class Graph:
@@ -217,7 +237,7 @@ class ParticleSystem:
         self.unk3 = stream.read(52)
         self.component_list_offset = stream.uint32_read()
         self.unk4 = stream.read(4)
-        self.emitter_offset = stream.uint32_read()
+        self.emitter_offset = stream.uint32_read() + 20
         self.unk5 = stream.read(8)
         self.visualizer_offset = stream.uint32_read()
         self.size = stream.uint32_read()
@@ -227,9 +247,11 @@ class ParticleSystem:
         if self.visualizer_offset == self.size:
             stream.seek(self.offset + self.size)
             return
-            
+        '''    
         # get emitters
         stream.seek(self.offset + self.emitter_offset)
+        #emitter_type = stream.uint32_read()
+        
         stop = False
         while not stop:
             emitter_type = stream.uint32_read()
@@ -247,6 +269,7 @@ class ParticleSystem:
                     break
                 self.emitters.append(emitter)
                 self.emitter_offsets.append(offset)
+        '''
             
         # get visualizer
         stream.seek(self.offset + self.visualizer_offset)
@@ -259,7 +282,7 @@ class ParticleSystem:
             while stream.uint32_read() == 0x00:
                 if stream.tell() == self.offset + self.size:
                     break
-            stream.advance(-4)
+            #stream.advance(-4)
             if stream.tell() + 16 > self.offset + self.size:
                 break
             component_type = [stream.uint32_read() for _ in range(4)]
@@ -329,7 +352,7 @@ class ParticleSystem:
         stream.write(self.unk3)
         stream.write(struct.pack("<I", self.component_list_offset))
         stream.write(self.unk4)
-        stream.write(struct.pack("<I", self.emitter_offset))
+        stream.write(struct.pack("<I", self.emitter_offset-20))
         stream.write(self.unk5)
         stream.write(struct.pack("<II", self.visualizer_offset, self.size))
         if self.non_rendering != 0:
@@ -630,6 +653,10 @@ class ParticleSystemView(QWidget):
             
         self.layout.addWidget(self.emitterView)
         
+        for graph in self.particleSystem.other_graphs:
+            g = GraphView(graph)
+            self.layout.addWidget(g)
+        
         self.layout.addStretch(1)
         self.setLayout(self.layout)
         
@@ -779,10 +806,210 @@ class VisualizerView(QWidget):
         newId = int(self.unitIdEdit.text())
         self.visualizer.unit_id = newId & self.int64Max
         
+class ParticleMaterialView(QWidget):
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout()
+        self.layout2 = QVBoxLayout()
+        self.setLayout(self.layout)
         
+    def loadData(self, particleEffect):
+        clear_layout(self.layout)
+        clear_layout(self.layout2)
+        scrollArea = QScrollArea()
+        scrollArea.setBackgroundRole(QPalette.Dark)
+        self.particleEffect = particleEffect
+        count = 0
+        for particleSystem in self.particleEffect.particle_systems:
+            if particleSystem.is_rendering():
+                if particleSystem.visualizer_offset != particleSystem.size:
+                    label = QLabel(f"Particle System {count}")
+                    visualizerView = VisualizerView(particleSystem.visualizer)
+                    self.layout.addWidget(label)
+                    self.layout.addWidget(visualizerView)
+                else:
+                    pass
+                count += 1
+        container = QWidget()
+        container.setLayout(self.layout)
+        scrollArea.setWidget(container)
+        self.layout2.addWidget(scrollArea)
+        self.setLayout(self.layout2)
+        
+    def setLifetime(self):
+        self.particleEffect.min_lifetime = float(self.lifetimeMinEdit.text())
+        self.particleEffect.max_lifetime = float(self.lifetimeMaxEdit.text())
+
+class MovablePoint(QGraphicsEllipseItem):
+    def __init__(self, x, y, radius=10):
+        super().__init__(x - radius, y - radius, 2 * radius, 2 * radius)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsMovable) #
+        self.setBrush(Qt.GlobalColor.blue)
+
+    def mouseMoveEvent(self, event):
+        # Update connected lines here if needed
+        # For instance, if you have a list of lines associated with this point
+        # You'd iterate through them and update their start or end points
+        super().mouseMoveEvent(event) # Ensure default behavior is called
+        
+
+def graphs_set_dark_mode():
+    plt.style.use("dark_background")
+    mpl.rcParams['axes.prop_cycle'] = cycler(color=['#ffd500'])
+    mpl.rcParams['figure.facecolor'] = "#333333"
+    mpl.rcParams['axes.facecolor'] = "#333333"
+
+def graphs_set_light_mode():
+    plt.style.use("default")
+
+class GraphWidget(QWidget):
+    
+    def __init__(self):
+        super().__init__()
+        self.fig = Figure()
+        self.ax = self.fig.add_subplot(111)
+        self.x = np.arange(0, 1, 1.0)
+        self.y = np.arange(0, 1, 1.0)
+        self.xscale = 1
+        self.yscale = 1
+        self.line, = self.ax.plot(self.x, self.y, marker="o")
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        self.grabbed_point = False
+        self.index = 0
+        self.layout = QHBoxLayout()
+        self.layout.addWidget(self.canvas)
+        self.setLayout(self.layout)
+        self.canvas.mpl_connect('button_press_event', self.onclick)
+        self.canvas.mpl_connect('button_release_event', self.onrelease)
+        self.canvas.mpl_connect('motion_notify_event', self.onmove)
+        self.margin = 0.2
+        self.ax.grid()
+        self.fig.canvas.draw()
+        
+    def set_xlabel(self, label):
+        self.ax.set_xlabel(label)
+        
+    def set_ylabel(self, label):
+        self.ax.set_ylabel(label)
+        
+    def set_title(self, title):
+        self.ax.set_title(title)
+        
+    def set_axis_format(self, axis, format):
+        if axis not in ["x", "y"]:
+            raise ValueError(f"Unknown axis {axis}")
+        if format not in ["decimal", "percent"]:
+            raise ValueError(f"Unknown axis format {format}")
+            
+        if axis == "x":
+            if format == "percent":
+                self.ax.xaxis.set_major_formatter(mpl.ticker.PercentFormatter(xmax=1.0))
+            elif format == "decimal":
+                self.ax.xaxis.set_major_formatter(mpl.ticker.ScalarFormatter())
+        elif axis == "y":
+            if format == "percent":
+                self.ax.yaxis.set_major_formatter(mpl.ticker.PercentFormatter(xmax=1.0))
+            elif format == "decimal":
+                self.ax.xaxis.set_major_formatter(mpl.ticker.ScalarFormatter())
+        
+    def set_data(self, xdata, ydata):
+        self.x = [i for i in xdata if i != 10000.0]
+        self.y = ydata[:len(self.x)]
+        axis_min = min(self.x)
+        axis_max = max(self.x)
+        self.xscale = (axis_max-axis_min)
+        if self.xscale == 0:
+            self.xscale = 1
+        self.ax.set_xlim(axis_min-(self.xscale*self.margin), axis_max+(self.xscale*self.margin))
+        axis_min = min(ydata)
+        axis_max = max(ydata)
+        self.yscale = (axis_max-axis_min)
+        if self.yscale == 0:
+            self.yscale = 1
+        self.ax.set_ylim(axis_min-(self.yscale*self.margin), axis_max+(self.yscale*self.margin))
+        self.line.set_xdata(self.x)
+        self.line.set_ydata(self.y)
+        self.fig.canvas.draw()
+        
+    def get_data(self):
+        return self.x, self.y
+        
+    def onclick(self, event):
+        min_distance = 999999999999
+        for i, point in enumerate(self.x):
+            distance = math.sqrt(abs((point-event.xdata)/(self.xscale/5))**2 + abs((self.y[i]-event.ydata)/(self.yscale/5))**2)
+            if distance < min_distance:
+                min_distance = distance
+                self.index = i
+        print(min_distance)
+        if event.button == mpl.backend_bases.MouseButton.LEFT:
+            if min_distance < 0.2:
+                self.grabbed_point = True
+            else:
+                if len(self.x) == 10:
+                    return
+                for i, point in enumerate(self.x):
+                    if event.xdata > point:
+                        self.index = i
+                self.x = np.insert(self.x, self.index+1, event.xdata)
+                self.y = np.insert(self.y, self.index+1, event.ydata)
+                self.line.set_xdata(self.x)
+                self.line.set_ydata(self.y)
+                self.fig.canvas.draw()
+        elif event.button == mpl.backend_bases.MouseButton.RIGHT:
+            if len(self.x) == 1:
+                return
+            if min_distance < 0.5:
+                self.x = np.delete(self.x, self.index)
+                self.y = np.delete(self.y, self.index)
+                self.line.set_xdata(self.x)
+                self.line.set_ydata(self.y)
+                self.fig.canvas.draw()
+        
+    def onrelease(self, event):
+        self.grabbed_point = False
+        axis_min = min(self.x)
+        axis_max = max(self.x)
+        self.xscale = (axis_max-axis_min)
+        if self.xscale == 0:
+            self.xscale = 1
+        self.ax.set_xlim(axis_min-(self.xscale*self.margin), axis_max+(self.xscale*self.margin))
+        axis_min = min(self.y)
+        axis_max = max(self.y)
+        self.yscale = (axis_max-axis_min)
+        if self.yscale == 0:
+            self.yscale = 1
+        self.ax.set_ylim(axis_min-(self.yscale*self.margin), axis_max+(self.yscale*self.margin))
+        self.fig.canvas.draw()
+        
+    def onmove(self, event):
+        if self.grabbed_point:
+            self.x[self.index] = event.xdata
+            self.y[self.index] = event.ydata
+            self.line.set_xdata(self.x)
+            self.line.set_ydata(self.y)
+            self.fig.canvas.draw()
+       
 class GraphView(QWidget):
     def __init__(self, graph):
-        pass
+        super().__init__()
+        self.layout = QVBoxLayout()
+        self.graph = graph
+        #self.resize(400, 400)
+        
+        # process graph
+        self.load_graph(graph)
+        
+        self.setLayout(self.layout)
+        
+    def load_graph(self, graph):
+        self.graphWidget = GraphWidget()
+        self.graph = graph
+        self.graphWidget.set_data(graph.x, graph.y)
+        self.layout.addWidget(self.graphWidget)
+        self.setLayout(self.layout)
+        
         
 class LifetimeView(QWidget):
     def __init__(self, particleEffect):
@@ -882,44 +1109,30 @@ class SizeModel(QStandardItemModel):
         super().__init__()
         self.undo_stack = undo_stack
         self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
-        self.sizes = []
+        self.sizeGraphs = []
 
-    def setFileData(self, fileData):
+    def setParticleEffect(self, particleEffect):
         self.clear()
-        self.sizes.clear()
+        self.sizeGraphs.clear()
+        self.particleEffect = particleEffect
         self.setHorizontalHeaderLabels(["Time 1", "Size 1", "Time 2", "Size 2", "Time 3", "Size 3", "Time 4", "Size 4", "Time 5", "Size 5", "Time 6", "Size 6", "Time 7", "Size 7", "Time 8", "Size 8", "Time 9", "Size 9", "Time 10", "Size 10"])
-        offsets = [x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
-        offsets.extend([x-400 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
         root = self.invisibleRootItem()
-        for offset in offsets:
-            size = Size.fromBytes(fileData[offset:offset+80])
-            size.setOffset(offset)
-            self.sizes.append(size)
+        for particleSystem in self.particleEffect.particle_systems:
+            self.sizeGraphs.extend(particleSystem.scale_graphs)
+        for graph in self.sizeGraphs:
+            if graph is None:
+                continue
             arr = []
             for i in range(10):
-                timeData = struct.unpack("<f", size.sizes[i][0])[0]
+                timeData = graph.x[i]
                 timeItem = QStandardItem(str(timeData))
                 if i == 0:
-                    timeItem.setData(size)
-                sizeData = struct.unpack('<f', size.sizes[i][1])[0]
+                    timeItem.setData(graph)
+                sizeData = graph.y[i]
                 sizeItem = QStandardItem(str(sizeData))
                 arr.append(timeItem)
                 arr.append(sizeItem)
             root.appendRow(arr)
-
-    def writeFileData(self, outFile):
-        for size in self.sizes:
-            offset = size.getOffset()
-            outFile.seek(offset)
-            for index, s in enumerate(size.sizes):
-                outFile.seek(offset + index*4)
-                outFile.write(s[0])
-                outFile.seek(offset + 40 + index*4)
-                outFile.write(s[1])
-                outFile.seek(offset - 80 + index*4)
-                outFile.write(s[0])
-                outFile.seek(offset - 40 + index*4)
-                outFile.write(s[1])
 
     def setData(self, index, value, role=Qt.EditRole):
         if role == Qt.EditRole and self.undo_stack:
@@ -939,13 +1152,13 @@ class SizeModel(QStandardItemModel):
         return self._apply(index, value)
 
     def _apply(self, index, value):
-        size = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        graph = self.itemFromIndex(index.siblingAtColumn(0)).data()
         i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
-            size.sizes[i][1] = struct.pack("<f", data)
+            graph.y[i] = data
         else:
-            size.sizes[i][0] = struct.pack("<f", data)
+            graph.x[i] = data
         return super().setData(index, value, Qt.EditRole)
 
 class LifetimeModel(QStandardItemModel):
@@ -955,27 +1168,22 @@ class LifetimeModel(QStandardItemModel):
         self.setHorizontalHeaderLabels(["Min", "Max"])
         self.lifetime = [0, 0]
 
-    def setFileData(self, fileData):
+    def setParticleEffect(self, particleEffect):
+        self.particleEffect = particleEffect
         self.clear()
-        self.lifetime[0] = struct.unpack("<f", fileData[4:8])[0]
-        self.lifetime[1] = struct.unpack("<f", fileData[8:12])[0]
         self.setHorizontalHeaderLabels(["Min", "Max"])
         root = self.invisibleRootItem()
-        minItem = QStandardItem(str(self.lifetime[0]))
-        maxItem = QStandardItem(str(self.lifetime[1]))
+        minItem = QStandardItem(str(particleEffect.min_lifetime))
+        maxItem = QStandardItem(str(particleEffect.max_lifetime))
         root.appendRow([minItem, maxItem])
-
-    def writeFileData(self, outFile):
-        outFile.seek(4)
-        outFile.write(struct.pack("<ff", *self.lifetime))
 
     def setData(self, index, value, role=Qt.EditRole):
         i = int(index.column()/2)
         data = float(ast.literal_eval(value))
         if index.column() % 2 == 1:
-            self.lifetime[1] = data
+            self.particleEffect.max_lifetime = data
         else:
-            self.lifetime[0] = data
+            self.particleEffect.min_lifetime = data
 
         return super().setData(index, value, role)
 
@@ -1068,46 +1276,28 @@ class OpacityGradientModel(QStandardItemModel):
         self.undo_stack = undo_stack
         self.file = MemoryStream()
         self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
-        self.gradients = []
+        self.opacityGraphs = []
 
-    def setFileData(self, fileData):
+    def setParticleEffect(self, particleEffect):
         self.clear()
-        self.gradients.clear()
-        self.file = MemoryStream()
-        self.file.write(fileData)
+        self.opacityGraphs.clear()
+        self.particleEffect = particleEffect
         self.setHorizontalHeaderLabels(["Time 1", "Opacity 1", "Time 2", "Opacity 2", "Time 3", "Opacity 3", "Time 4", "Opacity 4", "Time 5", "Opacity 5", "Time 6", "Opacity 6", "Time 7", "Opacity 7", "Time 8", "Opacity 8", "Time 9", "Opacity 9", "Time 10", "Opacity 10"])
-        offsets = [x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
-        offsets.extend([x-240 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
+        for particleSystem in self.particleEffect.particle_systems:
+            self.opacityGraphs.extend(particleSystem.opacity_graphs)
         root = self.invisibleRootItem()
-        for offset in offsets:
-            gradient = OpacityGradient.fromBytes(fileData[offset:offset+80])
-            gradient.setOffset(offset)
-            self.gradients.append(gradient)
+        for graph in self.opacityGraphs:
             arr = []
             for i in range(10):
-                timeData = struct.unpack("<f", gradient.opacities[i][0])[0]
+                timeData = graph.x[i]
                 timeItem = QStandardItem(str(timeData))
                 if i == 0:
-                    timeItem.setData(gradient)
-                opacityData = struct.unpack('<f', gradient.opacities[i][1])[0]
+                    timeItem.setData(graph)
+                opacityData = graph.y[i]
                 opacityItem = QStandardItem(str(opacityData))
                 arr.append(timeItem)
                 arr.append(opacityItem)
             root.appendRow(arr)
-
-    def writeFileData(self, outFile):
-        for gradient in self.gradients:
-            offset = gradient.getOffset()
-            outFile.seek(offset)
-            for index, opacity in enumerate(gradient.opacities):
-                outFile.seek(offset + index*4)
-                outFile.write(opacity[0])
-                outFile.seek(offset + 40 + index*4)
-                outFile.write(opacity[1])
-                outFile.seek(offset - 80 + index*4)
-                outFile.write(opacity[0])
-                outFile.seek(offset - 40 + index*4)
-                outFile.write(opacity[1])
 
     def setData(self, index, value, role=Qt.EditRole):
         if role == Qt.EditRole and self.undo_stack:
@@ -1127,57 +1317,42 @@ class OpacityGradientModel(QStandardItemModel):
         return self._apply(index, value)
 
     def _apply(self, index, value):
-        gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        graph = self.itemFromIndex(index.siblingAtColumn(0)).data()
         i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
-            gradient.opacities[i][1] = struct.pack("<f", data)
+            graph.y[i] = data
         else:
-            gradient.opacities[i][0] = struct.pack("<f", data)
+            graph.x[i] = data
         return super().setData(index, value, Qt.EditRole)
 
 class ColorGradientModel(QStandardItemModel):
     def __init__(self, undo_stack=None):
         super().__init__()
         self.undo_stack = undo_stack
-        self.file = MemoryStream()
         self.setHorizontalHeaderLabels(["Time 1", "Color 1", "Time 2", "Color 2", "Time 3", "Color 3", "Time 4", "Color 4", "Time 5", "Color 5", "Time 6", "Color 6", "Time 7", "Color 7", "Time 8", "Color 8", "Time 9", "Color 9", "Time 10", "Color 10"])
-        self.gradients = []
+        self.colorGraphs = []
 
-    def setFileData(self, fileData):
+    def setParticleEffect(self, particleEffect):
+        self.particleEffect = particleEffect
         self.clear()
-        self.gradients.clear()
-        self.file = MemoryStream()
-        self.file.write(fileData)
+        self.colorGraphs.clear()
         self.setHorizontalHeaderLabels(["Time 1", "Color 1", "Time 2", "Color 2", "Time 3", "Color 3", "Time 4", "Color 4", "Time 5", "Color 5", "Time 6", "Color 6", "Time 7", "Color 7", "Time 8", "Color 8", "Time 9", "Color 9", "Time 10", "Color 10"])
-        offsets = [x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000008"))]
-        offsets.extend([x-160 for x in find_all_occurrences(fileData, bytes.fromhex("FFFFFFFF0C00000001"))])
+        for particleSystem in self.particleEffect.particle_systems:
+            self.colorGraphs.extend(particleSystem.color_graphs)
         root = self.invisibleRootItem()
-        for offset in offsets:
-            gradient = ColorGradient.fromBytes(fileData[offset:offset+160])
-            gradient.setOffset(offset)
-            self.gradients.append(gradient)
+        for graph in self.colorGraphs:
             arr = []
             for i in range(10):
-                timeData = struct.unpack("<f", gradient.colors[i][0])[0]
+                timeData = graph.x[i]
                 timeItem = QStandardItem(str(timeData))
                 if i == 0:
-                    timeItem.setData(gradient)
-                colorData = struct.unpack('<fff', gradient.colors[i][1])
+                    timeItem.setData(graph)
+                colorData = graph.y[i]
                 colorItem = QStandardItem(str(colorData))
                 arr.append(timeItem)
                 arr.append(colorItem)
             root.appendRow(arr)
-
-    def writeFileData(self, outFile):
-        for gradient in self.gradients:
-            offset = gradient.getOffset()
-            outFile.seek(offset)
-            for index, color in enumerate(gradient.colors):
-                outFile.seek(offset + index*4)
-                outFile.write(color[0])
-                outFile.seek(40 + offset + index*12)
-                outFile.write(color[1])
 
     def setData(self, index, value, role=Qt.EditRole):
         if role == Qt.EditRole and self.undo_stack:
@@ -1197,13 +1372,13 @@ class ColorGradientModel(QStandardItemModel):
         return self._apply(index, value)
 
     def _apply(self, index, value):
-        gradient = self.itemFromIndex(index.siblingAtColumn(0)).data()
+        graph = self.itemFromIndex(index.siblingAtColumn(0)).data()
         i = int(index.column() / 2)
         data = ast.literal_eval(value)
         if index.column() % 2 == 1:
-            gradient.colors[i][1] = struct.pack("<fff", *data)
+            graph.y[i] = data
         else:
-            gradient.colors[i][0] = struct.pack("<f", data)
+            graph.x[i] = data
         return super().setData(index, value, Qt.EditRole)
 
 class OpacityTable(QTableView):
@@ -1256,6 +1431,8 @@ class ColorTable(QTableView):
         self.customContextMenuRequested.connect(self.showContextMenu)
         self.contextMenuColorPickerAction = QAction("Color Picker")
         self.contextMenuColorPickerAction.triggered.connect(self.showColorPicker)
+        self.contextMenuHuePickerAction = QAction("Hue Picker")
+        self.contextMenuHuePickerAction.triggered.connect(self.showHuePicker)
         self.contextMenu = QMenu(self)
 
         # Add Ctrl+V shortcut
@@ -1273,6 +1450,21 @@ class ColorTable(QTableView):
             self.model().setData(index, str(colorTuple))
         except:
             pass
+            
+    def showHuePicker(self, pos):
+        index = self.selectedIndexes()[0]
+        colorTuple = ast.literal_eval(self.model().itemFromIndex(index).text())
+        color = QColor(*colorTuple)
+        selectedColor = QColorDialog.getColor(initial=color, parent=self, title="Adjust color hue")
+        hue = selectedColor.hue()
+        colors = [(QColor(*ast.literal_eval(self.model().itemFromIndex(i).text())), i) for i in self.selectedIndexes()]
+        for color, index in colors:
+            try:
+                color.setHsv(hue, color.saturation(), color.value())
+                colorTuple = color.toRgb().toTuple()[0:3]
+                self.model().setData(index, str(colorTuple))
+            except:
+                pass
 
     def triggerColorPickerFromButton(self):
         selected = self.selectedIndexes()
@@ -1288,9 +1480,16 @@ class ColorTable(QTableView):
 
     def showContextMenu(self, pos):
         self.contextMenu.clear()
-        if not self.selectedIndexes() or len(self.selectedIndexes()) > 1:
+        if not self.selectedIndexes():
             return
-        if self.selectedIndexes()[0].column() % 2 == 1:
+        if len(self.selectedIndexes()) > 1:
+            for index in self.selectedIndexes():
+                if not index.column() % 2 == 1:
+                    return
+            self.contextMenu.addAction(self.contextMenuHuePickerAction)
+            global_pos = self.mapToGlobal(pos)
+            self.contextMenu.exec(global_pos)
+        elif self.selectedIndexes()[0].column() % 2 == 1:
             self.contextMenu.addAction(self.contextMenuColorPickerAction)
             global_pos = self.mapToGlobal(pos)
             self.contextMenu.exec(global_pos)
@@ -1334,7 +1533,7 @@ class ColorSwatchDelegate(QStyledItemDelegate):
             return
 
         # Clean and parse RGB
-        cleaned_text = text.strip().lstrip("(").rstrip(")")
+        cleaned_text = text.strip().lstrip("(").rstrip(")").lstrip("[").rstrip("]")
 
         try:
             parts = [float(x.strip()) for x in cleaned_text.split(",")]
@@ -1482,13 +1681,14 @@ class MainWindow(QMainWindow):
     def initComponents(self):
         self.initMenuBar()
         self.initFilesWindow()
-        self.initParticleView()
-        #self.initColorView()
-        #self.initOpacityView()
-        #self.initLifetimeView()
-        #self.initSizeView()
-        #self.initPositionView()
-        #self.initRotationView()
+        self.initTabWidget()
+        self.initMaterialView()
+        self.initColorView()
+        self.initOpacityView()
+        self.initLifetimeView()
+        self.initSizeView()
+        self.initPositionView()
+        self.initRotationView()
 
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
@@ -1530,67 +1730,78 @@ class MainWindow(QMainWindow):
         filenameStrip.setStyleSheet("""
             background-color: #434343;
         """)
+        filenameStrip.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         
         
         
         self.layout.addWidget(filenameStrip)
         self.splitter.addWidget(self.loadedFilesWindow)
-        self.splitter.addWidget(self.particleEffectView)
+        #self.splitter.addWidget(self.particleEffectView)
+        self.splitter.addWidget(self.tabWidget)
         self.layout.addWidget(self.splitter)
-        self.layout.addStretch(1)
+        #self.layout.addStretch()
         #self.layout.addWidget(self.tabWidget)
 
         # Color tab layout
-        #layout = QVBoxLayout()
-        #buttonLayout = QHBoxLayout()
-        #buttonLayout.addWidget(self.hideTimeColumnsBtn)
-        #self.hideTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        #buttonLayout.addWidget(self.pickColorBtn)
-        #layout.addLayout(buttonLayout)
-        #layout.addWidget(self.colorView)
-        #self.colorTab.setLayout(layout)
+        layout = QVBoxLayout()
+        buttonLayout = QHBoxLayout()
+        buttonLayout.addWidget(self.hideTimeColumnsBtn)
+        self.hideTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        buttonLayout.addWidget(self.pickColorBtn)
+        layout.addLayout(buttonLayout)
+        layout.addWidget(self.colorView)
+        self.colorTab.setLayout(layout)
 
         # Opacity tab layout
-        #layout = QVBoxLayout()
-        #opacityButtonLayout = QHBoxLayout()
-        #opacityButtonLayout.addWidget(self.hideOpacityTimeColumnsBtn)
-        #self.hideOpacityTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        #layout.addLayout(opacityButtonLayout)
-        #layout.addWidget(self.opacityView)
-        #self.opacityTab.setLayout(layout)
+        layout = QVBoxLayout()
+        opacityButtonLayout = QHBoxLayout()
+        opacityButtonLayout.addWidget(self.hideOpacityTimeColumnsBtn)
+        self.hideOpacityTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        layout.addLayout(opacityButtonLayout)
+        layout.addWidget(self.opacityView)
+        self.opacityTab.setLayout(layout)
 
         # Lifetime tab layout
-        #layout = QVBoxLayout()
-        #layout.addWidget(self.lifetimeView)
-        #self.lifetimeTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.lifetimeView)
+        self.lifetimeTab.setLayout(layout)
 
         # Size Scale tab layout
-        #layout = QVBoxLayout()
-        #sizeButtonLayout = QHBoxLayout()
-        #sizeButtonLayout.addWidget(self.hideSizeTimeColumnsBtn)
-        #self.hideSizeTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
-        #layout.addLayout(sizeButtonLayout)
-        #layout.addWidget(self.sizeView)
-        #self.sizeTab.setLayout(layout)
+        layout = QVBoxLayout()
+        sizeButtonLayout = QHBoxLayout()
+        sizeButtonLayout.addWidget(self.hideSizeTimeColumnsBtn)
+        self.hideSizeTimeColumnsBtn.setToolTip("Toggle visibility of time columns")
+        layout.addLayout(sizeButtonLayout)
+        layout.addWidget(self.sizeView)
+        self.sizeTab.setLayout(layout)
+        
+        # Visualizer tab layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.particleMaterialView)
+        self.materialTab.setLayout(layout)
 
-        #layout = QVBoxLayout()
-        #layout.addWidget(self.positionView)
-        #self.positionTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.positionView)
+        self.positionTab.setLayout(layout)
 
-        #layout = QVBoxLayout()
-        #layout.addWidget(self.rotationView)
-        #self.rotationTab.setLayout(layout)
+        layout = QVBoxLayout()
+        layout.addWidget(self.rotationView)
+        self.rotationTab.setLayout(layout)
 
-        #self.tabWidget.addTab(self.colorTab, "Color")
-        #self.tabWidget.addTab(self.opacityTab, "Opacity")
-        #self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
-        #self.tabWidget.addTab(self.sizeTab, "Size Scale")
-        #self.tabWidget.addTab(self.positionTab, "Emitter Offset")
-        #self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
+        self.tabWidget.addTab(self.colorTab, "Color")
+        self.tabWidget.addTab(self.opacityTab, "Opacity")
+        self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
+        self.tabWidget.addTab(self.sizeTab, "Size Scale")
+        self.tabWidget.addTab(self.positionTab, "Emitter Offset")
+        self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
+        self.tabWidget.addTab(self.materialTab, "Visualizers")
 
         widget = QWidget()
         widget.setLayout(self.layout)
         self.setCentralWidget(widget)
+        
+    def initMaterialView(self):
+        self.particleMaterialView = ParticleMaterialView(self)
         
     def initParticleView(self):
         self.particleEffectView = ParticleEffectView(self)
@@ -1688,12 +1899,13 @@ class MainWindow(QMainWindow):
 
     def initTabWidget(self):
         self.tabWidget = QTabWidget(self)
-        #self.colorTab = QWidget(self.tabWidget)
-        #self.opacityTab = QWidget(self.tabWidget)
-        #self.lifetimeTab = QWidget(self.tabWidget)
-        #self.sizeTab = QWidget(self.tabWidget)
-        #self.positionTab = QWidget(self.tabWidget)
-        #self.rotationTab = QWidget(self.tabWidget)
+        self.colorTab = QWidget(self.tabWidget)
+        self.opacityTab = QWidget(self.tabWidget)
+        self.lifetimeTab = QWidget(self.tabWidget)
+        self.sizeTab = QWidget(self.tabWidget)
+        self.positionTab = QWidget(self.tabWidget)
+        self.rotationTab = QWidget(self.tabWidget)
+        self.materialTab = QWidget(self.tabWidget)
 
     def initMenuBar(self):
         menu_bar = self.menuBar()
@@ -1734,7 +1946,11 @@ class MainWindow(QMainWindow):
         self.filenameLabel.setText(f"{os.path.basename(filepath)} — last modified: {modified_time}")
         
     def reloadData(self):
-        self.particleEffectView.loadData(self.particleEffect)
+        self.particleMaterialView.loadData(self.particleEffect)
+        self.colorViewModel.setParticleEffect(self.particleEffect)
+        self.opacityViewModel.setParticleEffect(self.particleEffect)
+        self.lifetimeViewModel.setParticleEffect(self.particleEffect)
+        self.sizeViewModel.setParticleEffect(self.particleEffect)
                 
     def saveProject(self, initialdir: str | None = '', outputFile: str | None = ""):
         if not outputFile:
@@ -1811,19 +2027,15 @@ class MainWindow(QMainWindow):
         self.reloadData()
         self.addLoadedFile(archive_file, self.particleEffectData, self.particleEffect)
         self.setLoadedFileLabels(archive_file)
-        '''    
-        self.colorViewModel.setFileData(self.data)
-        self.opacityViewModel.setFileData(self.data)
-        self.lifetimeViewModel.setFileData(self.data)
-        self.sizeViewModel.setFileData(self.data)
-        self.positionViewModel.setFileData(self.data)
-        self.rotationViewModel.setFileData(self.data)
+            
+        #self.positionViewModel.setFileData(self.data)
+        #self.rotationViewModel.setFileData(self.data)
 
         # Reapply hidden column states
         self.applyHiddenColumns('color', self.colorView)
         self.applyHiddenColumns('opacity', self.opacityView)
         self.applyHiddenColumns('size', self.sizeView)
-        '''
+        
         
         
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
@@ -1833,6 +2045,7 @@ class MainWindow(QMainWindow):
         if not archive_file:
             return
         with open(archive_file, "wb") as f:
+            self.particleEffectData.seek(0)
             self.particleEffect.write_to_memory_stream(self.particleEffectData)
             f.write(self.particleEffectData.data)
             #data = MemoryStream()
@@ -1897,6 +2110,7 @@ if __name__ == "__main__":
     app = QApplication([])
     app.setStyle("Fusion")
     app.setPalette(get_dark_mode_palette(app))
+    graphs_set_dark_mode()
 
     window = MainWindow()
 
