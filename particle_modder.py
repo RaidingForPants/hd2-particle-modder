@@ -818,7 +818,7 @@ class ParticleMaterialView(QWidget):
         clear_layout(self.layout)
         clear_layout(self.layout2)
         scrollArea = QScrollArea()
-        scrollArea.setBackgroundRole(QPalette.Dark)
+        #scrollArea.setBackgroundRole(QPalette.Dark)
         self.particleEffect = particleEffect
         count = 0
         for particleSystem in self.particleEffect.particle_systems:
@@ -1658,6 +1658,71 @@ class LoadedFileWidget(QWidget):
         self.openClicked.emit(self.filepath, self.fileData, self.particleEffect)
 
 
+class LoadedFilesBar(QWidget):
+    
+    loadFile = Signal(str, MemoryStream, ParticleEffect)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout()
+        
+        self.tabWidget = QTabWidget(self)
+        self.tabWidget.setTabsClosable(True)
+        self.tabWidget.tabCloseRequested.connect(self.tabClosed)
+        self.tabWidget.currentChanged.connect(self.tabChanged)
+        #self.tabWidget.tabBar().setMovable(True)
+        
+        self.noteEntry = QLineEdit()
+        self.noteEntry.textEdited.connect(self.setNote)
+        
+        self.layout.addWidget(self.tabWidget)
+        self.layout.addWidget(self.noteEntry)
+        
+        self.tabData = []
+        
+        self.setLayout(self.layout)
+        
+    def tabClosed(self, tabIndex):
+        del self.tabData[tabIndex]
+        self.tabWidget.removeTab(tabIndex)
+        
+    def tabChanged(self, tabIndex):
+        if tabIndex == -1:
+            return
+        tabData = self.tabData[tabIndex]
+        if tabData[3]:
+            self.noteEntry.setText(tabData[3])
+        else:
+            self.noteEntry.setText("Set Note:")
+        self.loadFile.emit(tabData[0], tabData[1], tabData[2])
+        
+    def addFile(self, filepath, fileData, effect, note=""):
+        self.tabData.append([filepath, fileData, effect, note])
+        index = self.tabWidget.addTab(QWidget(), f"{os.path.basename(filepath)}")
+        self.tabWidget.setCurrentIndex(index)
+        
+    def getAllLoadedFiles(self):
+        return self.tabData
+        
+    def getSelectedFile(self):
+        if self.tabWidget.currentIndex() != -1:
+            return self.tabData[self.tabWidget.currentIndex()]
+        return None
+        
+    def setNote(self, newNote):
+        if self.tabWidget.currentIndex() != -1:
+            self.tabData[self.tabWidget.currentIndex()][3] = newNote
+            
+    def markEdited(self, value: bool):
+        if self.tabWidget.currentIndex() != -1:
+            text = self.tabWidget.setTabText
+            filepath = self.tabData[self.tabWidget.currentIndex()][0]
+            self.tabWidget.setTabText(self.tabWidget.currentIndex(), f"{os.path.basename(filepath)}{'*' if value else ''}")
+        
+    def clear(self):
+        self.tabWidget.clear()
+        self.tabData.clear()
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -1692,11 +1757,13 @@ class MainWindow(QMainWindow):
 
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
-        self.fileSaveArchiveAction.triggered.connect(self.saveArchive)
+        self.fileSaveAsAction.triggered.connect(self.saveArchive)
+        self.fileSaveArchiveAction.triggered.connect(self.saveSelectedFile)
         self.fileSaveProjectAction.triggered.connect(self.saveProject)
         self.fileLoadProjectAction.triggered.connect(self.loadProject)
+        self.fileCloseAllAction.triggered.connect(self.closeAllFiles)
         
-        self.loadedFilesWindow.loadFile.connect(self.loadFromStream)
+        self.loadedFilesStrip.loadFile.connect(self.loadFromStream)
 
     def layoutComponents(self):
         self.setMinimumSize(300, 200)
@@ -1732,13 +1799,13 @@ class MainWindow(QMainWindow):
         """)
         filenameStrip.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         
-        
-        
         self.layout.addWidget(filenameStrip)
-        self.splitter.addWidget(self.loadedFilesWindow)
+        self.layout.addWidget(self.loadedFilesStrip)
+        #self.splitter.addWidget(self.loadedFilesWindow)
         #self.splitter.addWidget(self.particleEffectView)
-        self.splitter.addWidget(self.tabWidget)
-        self.layout.addWidget(self.splitter)
+        #self.splitter.addWidget(self.tabWidget)
+        self.layout.addWidget(self.tabWidget)
+        #self.layout.addWidget(self.splitter)
         #self.layout.addStretch()
         #self.layout.addWidget(self.tabWidget)
 
@@ -1807,7 +1874,8 @@ class MainWindow(QMainWindow):
         self.particleEffectView = ParticleEffectView(self)
         
     def initFilesWindow(self):
-        self.loadedFilesWindow = LoadedFilesWindow(self)
+        self.loadedFilesStrip = LoadedFilesBar(self)
+        self.loadedFilesStrip.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
 
     def initColorView(self):
         self.colorView = ColorTable(self)
@@ -1914,15 +1982,19 @@ class MainWindow(QMainWindow):
 
         self.fileOpenArchiveAction = QAction("Open", self)
         self.fileSaveArchiveAction = QAction("Save", self)
+        self.fileSaveAsAction =      QAction("Save As", self)
         self.fileSaveAllFilesAction= QAction("Save All", self)
         self.fileLoadProjectAction = QAction("Open Project File", self)
         self.fileSaveProjectAction = QAction("Save Project File", self)
+        self.fileCloseAllAction =    QAction("Close All", self)
 
         self.file_menu.addAction(self.fileOpenArchiveAction)
-        self.file_menu.addAction(self.fileSaveArchiveAction)
-        self.file_menu.addAction(self.fileSaveAllFilesAction)
         self.file_menu.addAction(self.fileLoadProjectAction)
+        self.file_menu.addAction(self.fileSaveArchiveAction)
+        self.file_menu.addAction(self.fileSaveAsAction)
+        #self.file_menu.addAction(self.fileSaveAllFilesAction)
         self.file_menu.addAction(self.fileSaveProjectAction)
+        self.file_menu.addAction(self.fileCloseAllAction)
 
         self.edit_menu = menu_bar.addMenu("Edit")
         self.undo_action = self.undoStack.createUndoAction(self, "Undo")
@@ -1958,23 +2030,21 @@ class MainWindow(QMainWindow):
             outputFile = outputFile[0]
         if not outputFile:
             return
-        loadedFiles = self.loadedFilesWindow.getAllLoadedFiles()
+        loadedFiles = self.loadedFilesStrip.getAllLoadedFiles()
         root = ET.Element("root")
         project = ET.SubElement(root, "project", name="default project")
         projectFiles = ET.SubElement(project, "project_files")
-        for fileWidget in loadedFiles:
+        for item in loadedFiles:
             file = ET.SubElement(projectFiles, "file")
-            ET.SubElement(file, "filepath").text = fileWidget.filepath
-            ET.SubElement(file, "note").text = fileWidget.note
+            ET.SubElement(file, "filepath").text = item[0]
+            ET.SubElement(file, "note").text = item[3]
         tree = ET.ElementTree(root)
         tree.write(outputFile)
         
     def saveProjectFiles(self):
-        projectFiles = self.loadedFilesWindow.getAllLoadedFiles()
-        for fileWidget in loadedFiles:
-            path = fileWidget.filepath
-            stream = fileWidget.fileData
-            particleEffect = fileWidget.particleEffect
+        projectFiles = self.loadedFilesStrip.getAllLoadedFiles()
+        for item in projectFiles:
+            path, stream, particleEffect, note = item
             stream.seek(0)
             particleEffect.write_to_memory_stream(stream)
             with open(path, 'wb') as f:
@@ -1987,7 +2057,7 @@ class MainWindow(QMainWindow):
             projectFile = projectFile[0]
         if not projectFile:
             return
-        self.clearLoadedFiles()
+        self.closeAllFiles()
         tree = ET.parse(projectFile)
         root = tree.getroot()
         for project in root:
@@ -2004,11 +2074,12 @@ class MainWindow(QMainWindow):
                 self.addLoadedFile(filepath, fileData, particleEffect, note)
             break # support for multiple projects may be added later
             
-    def clearLoadedFiles(self):
-        self.loadedFilesWindow.clear()
+    def closeAllFiles(self):
+        self.loadedFilesStrip.clear()
         
     def addLoadedFile(self, filepath: str, fileData: MemoryStream, particleEffect: ParticleEffect, note: str=""):
-        self.loadedFilesWindow.addFile(filepath, fileData, particleEffect, note)
+        self.loadedFilesStrip.addFile(filepath, fileData, particleEffect, note)
+        #self.loadedFilesWindow.addFile(filepath, fileData, particleEffect, note)
 
     def load_archive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
@@ -2059,6 +2130,11 @@ class MainWindow(QMainWindow):
             #f.write(data.data)
 
             self.statusBar().showMessage(f"Saved: {os.path.basename(archive_file)}", 5000)
+            
+    def saveSelectedFile(self):
+        file = self.loadedFilesStrip.getSelectedFile()
+        if file:
+            self.saveArchive(archive_file=file[0])
 
     def dropEvent(self, event):
         for url in event.mimeData().urls():
