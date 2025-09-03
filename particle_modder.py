@@ -133,7 +133,13 @@ class Visualizer:
             data = struct.pack("<I", self.visualizer_type) + self.data
             stream.write(data)
         elif self.visualizer_type == Visualizer.MESH:
-            data = struct.pack("<IQQQ", self.visualizer_type, self.mesh_id, self.unit_id, self.material_id) + self.data
+            data = struct.pack("<IQQQ", self.visualizer_type, self.unit_id, self.mesh_id, self.material_id) + self.data
+            stream.write(data)
+        elif self.visualizer_type == Visualizer.UNKNOWN3:
+            data = struct.pack("<IIIQ", self.visualizer_type, self.unk1, self.unk2, self.material_id) + self.data
+            stream.write(data)
+        elif self.visualizer_type == Visualizer.UNKNOWN4:
+            data = struct.pack("<IQ", self.visualizer_type, self.material_id) + self.data
             stream.write(data)
         
 class Graph:

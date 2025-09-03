@@ -122,9 +122,8 @@ struct Emitter {
 };
 
 struct MeshVisualizer {
+    u64 unitID;
     u64 meshID;
-    u32 unitID;
-    padding[4];
     u64 materialID;
     u32 visualizerData[56];
 };
