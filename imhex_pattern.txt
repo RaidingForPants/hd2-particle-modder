@@ -239,6 +239,10 @@ struct Component {
         FloatComponent c;
     } else if (componentType == 0x00){
         //pass
+    }else if (componentType == 0x11){
+        if ($ + 284 < parent.startOffset + parent.particleSystemSize) {
+            padding[284];
+        }
     } else {
         //BasicComponent c;
     }

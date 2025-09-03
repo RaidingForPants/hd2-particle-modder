@@ -292,11 +292,33 @@ class ParticleSystem:
         visualizer.from_memory_stream(stream)
         self.visualizer = visualizer
         
-        # get graphs
+        # get graphs/components
         while stream.tell() < self.offset + self.size:
-            while stream.uint32_read() == 0x00:
-                if stream.tell() == self.offset + self.size:
-                    break
+            component_type = stream.uint32_read()
+            subtype = 0
+            if component_type in [0x05, 0x04, 0x0F]:
+                subtype = stream.uint32_read()
+                if subtype < 0x20:
+                    stream.advance(-4)
+                    continue
+                else:
+                    stream.advance(-8)
+            elif component_type == 0x00:
+                continue
+            elif component_type == 0x11:
+                if stream.tell() + 284 < self.offset + self.size:
+                    stream.advance(284)
+            elif component_type == 0x0B:
+                stream.advance(24)
+                continue
+            #elif component_type == 0x0D:
+            #    stream.advance(8)
+            #    continue
+            else:
+                continue
+            #while stream.uint32_read() == 0x00:
+            #    if stream.tell() == self.offset + self.size:
+            #        break
             #stream.advance(-4)
             if stream.tell() + 16 > self.offset + self.size:
                 break
@@ -308,6 +330,7 @@ class ParticleSystem:
                 unk_graph.from_memory_stream(stream)
                 unk_graph.from_memory_stream(stream)
                 self.other_graphs.append(unk_graph)
+                stream.advance(8) # unknown data
             elif component_type[0] == 0x05 and component_type[1] >= 0x20: # color graph
                 # color graph
                 stream.advance(-4)
@@ -323,6 +346,7 @@ class ParticleSystem:
                 color = ColorGraph()
                 color.from_memory_stream(stream)
                 self.color_graphs.append(color)
+                stream.advance(16) # unknown data
             elif component_type[1] == 0x05 and component_type[2] >= 0x20: # color graph
                 self.color_graph_offsets.append(stream.tell())
                 scale = Graph()
@@ -336,6 +360,7 @@ class ParticleSystem:
                 color = ColorGraph()
                 color.from_memory_stream(stream)
                 self.color_graphs.append(color)  
+                stream.advance(16)
             elif component_type[0] == 0x0F and component_type[1] >= 0x20: # color graph, no scale
                 stream.advance(-4)
                 self.color_graph_offsets.append(stream.tell())
@@ -350,6 +375,7 @@ class ParticleSystem:
                 color = ColorGraph()
                 color.from_memory_stream(stream)
                 self.color_graphs.append(color)
+                stream.advance(16)
             elif component_type[0] == 0x0B: # some float data
                 stream.advance(12)
             else:
@@ -2071,6 +2097,9 @@ class MainWindow(QMainWindow):
         self.opacityViewModel.setParticleEffect(self.particleEffect)
         self.lifetimeViewModel.setParticleEffect(self.particleEffect)
         self.sizeViewModel.setParticleEffect(self.particleEffect)
+        self.applyHiddenColumns('color', self.colorView)
+        self.applyHiddenColumns('opacity', self.opacityView)
+        self.applyHiddenColumns('size', self.sizeView)
                 
     def saveProject(self, initialdir: str | None = '', outputFile: str | None = ""):
         if not outputFile:
