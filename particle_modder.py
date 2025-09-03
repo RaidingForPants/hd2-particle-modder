@@ -96,7 +96,8 @@ class Visualizer:
     BILLBOARD = 0
     LIGHT = 1
     MESH = 2
-    UNKNOWN = 4
+    UNKNOWN3 = 3
+    UNKNOWN4 = 4
     
     def __init__(self):
         pass
@@ -111,10 +112,18 @@ class Visualizer:
         elif self.visualizer_type == Visualizer.LIGHT:
             self.data = stream.read(256)
         elif self.visualizer_type == Visualizer.MESH:
-            self.mesh_id = stream.uint64_read()
             self.unit_id = stream.uint64_read()
+            self.mesh_id = stream.uint64_read()
             self.material_id = stream.uint64_read()
             self.data = stream.read(224)
+        elif self.visualizer_type == Visualizer.UNKNOWN3:
+            self.unk1 = stream.uint32_read()
+            self.unk2 = stream.uint32_read()
+            self.material_id = stream.uint64_read()
+            self.data = stream.read(232)
+        elif self.visualizer_type == Visualizer.UNKNOWN4:
+            self.material_id = stream.uint64_read()
+            self.data = stream.read(248)
             
     def write_to_memory_stream(self, stream):
         if self.visualizer_type == Visualizer.BILLBOARD:
@@ -781,6 +790,21 @@ class VisualizerView(QWidget):
             self.meshIdLabel = QLabel(f"Mesh: ", parent=self)
             
             self.visualizerLabel.setText("Visualizer Type: Mesh")
+            
+        elif self.visualizer.visualizer_type == Visualizer.UNKNOWN3:
+            self.materialIdLabel = QLabel(f"Material: ", parent=self)
+            self.materialIdEdit = QLineEdit(f"{self.visualizer.material_id}", parent=self)
+            self.materialIdEdit.setFixedWidth(lineWidth)
+            self.materialIdEdit.editingFinished.connect(self.materialIdChanged)
+            self.materialIdEdit.setValidator(self.int64Validator)
+            self.visualizerLabel.setText("Visualizer Type: UNKNOWN")
+        elif self.visualizer.visualizer_type == Visualizer.UNKNOWN4:
+            self.materialIdLabel = QLabel(f"Material: ", parent=self)
+            self.materialIdEdit = QLineEdit(f"{self.visualizer.material_id}", parent=self)
+            self.materialIdEdit.setFixedWidth(lineWidth)
+            self.materialIdEdit.editingFinished.connect(self.materialIdChanged)
+            self.materialIdEdit.setValidator(self.int64Validator)
+            self.visualizerLabel.setText("Visualizer Type: UNKNOWN")
             
         self.layout.addWidget(self.visualizerLabel, alignment=Qt.AlignTop | Qt.AlignLeft)
         for label, edit in zip([self.materialIdLabel, self.unitIdLabel, self.meshIdLabel], [self.materialIdEdit, self.unitIdEdit, self.meshIdEdit]):
@@ -1730,6 +1754,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"HD2 Particle Modder - Version {VERSION}")
         self.setWindowIcon(QIcon("assets/icon.png"))
         self.resize(1100, 700)
+        self.particleFilepath = ""
         self.undoStack = QUndoStack(self)
 
         self.hidden_columns = {
@@ -2015,6 +2040,7 @@ class MainWindow(QMainWindow):
         stat = os.stat(filepath)
         modified_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
         self.name = os.path.basename(filepath)
+        self.particleFilepath = filepath
         self.filenameLabel.setText(f"{os.path.basename(filepath)} — last modified: {modified_time}")
         
     def reloadData(self):
@@ -2083,7 +2109,7 @@ class MainWindow(QMainWindow):
 
     def load_archive(self, initialdir: str | None = '', archive_file: str | None = ""):
         if not archive_file:
-            archive_file = QFileDialog.getOpenFileName(self, "Select archive", str(initialdir), "All Files (*.*)")
+            archive_file = QFileDialog.getOpenFileName(self, "Select archive", str(initialdir), "Particle Files (*.particles *.pmod);;All Files (*.*)")
             archive_file = archive_file[0]
         if not archive_file:
             return
@@ -2110,6 +2136,8 @@ class MainWindow(QMainWindow):
         
         
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
+        if not initialdir:
+            initialdir = os.path.dirname(self.particleFilepath)
         if not archive_file:
             archive_file = QFileDialog.getSaveFileName(self, "Select archive", self.name)
             archive_file = archive_file[0]
