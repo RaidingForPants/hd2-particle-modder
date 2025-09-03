@@ -1710,6 +1710,10 @@ class LoadedFilesBar(QWidget):
         del self.tabData[tabIndex]
         self.tabWidget.removeTab(tabIndex)
         
+    def closeCurrentTab(self):
+        if self.tabWidget.currentIndex() != -1:
+            self.tabClosed(self.tabWidget.currentIndex())
+        
     def tabChanged(self, tabIndex):
         if tabIndex == -1:
             return
@@ -1787,6 +1791,7 @@ class MainWindow(QMainWindow):
         self.fileSaveProjectAction.triggered.connect(self.saveProject)
         self.fileLoadProjectAction.triggered.connect(self.loadProject)
         self.fileCloseAllAction.triggered.connect(self.closeAllFiles)
+        self.fileCloseAction.triggered.connect(self.closeCurrentFile)
         
         self.loadedFilesStrip.loadFile.connect(self.loadFromStream)
 
@@ -2006,11 +2011,16 @@ class MainWindow(QMainWindow):
         self.file_menu = menu_bar.addMenu("File")
 
         self.fileOpenArchiveAction = QAction("Open", self)
+        self.fileOpenArchiveAction.setShortcut(QKeySequence.Open)
         self.fileSaveArchiveAction = QAction("Save", self)
+        self.fileSaveArchiveAction.setShortcut(QKeySequence.Save)
         self.fileSaveAsAction =      QAction("Save As", self)
+        self.fileSaveAsAction.setShortcut(QKeySequence.SaveAs)
         self.fileSaveAllFilesAction= QAction("Save All", self)
         self.fileLoadProjectAction = QAction("Open Project File", self)
         self.fileSaveProjectAction = QAction("Save Project File", self)
+        self.fileCloseAction =       QAction("Close File", self)
+        self.fileCloseAction.setShortcut(QKeySequence("Ctrl+W"))
         self.fileCloseAllAction =    QAction("Close All", self)
 
         self.file_menu.addAction(self.fileOpenArchiveAction)
@@ -2019,6 +2029,7 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.fileSaveAsAction)
         #self.file_menu.addAction(self.fileSaveAllFilesAction)
         self.file_menu.addAction(self.fileSaveProjectAction)
+        self.file_menu.addAction(self.fileCloseAction)
         self.file_menu.addAction(self.fileCloseAllAction)
 
         self.edit_menu = menu_bar.addMenu("Edit")
@@ -2102,6 +2113,9 @@ class MainWindow(QMainWindow):
             
     def closeAllFiles(self):
         self.loadedFilesStrip.clear()
+        
+    def closeCurrentFile(self):
+        self.loadedFilesStrip.closeCurrentTab()
         
     def addLoadedFile(self, filepath: str, fileData: MemoryStream, particleEffect: ParticleEffect, note: str=""):
         self.loadedFilesStrip.addFile(filepath, fileData, particleEffect, note)
