@@ -1737,6 +1737,11 @@ class LoadedFilesBar(QWidget):
             return self.tabData[self.tabWidget.currentIndex()]
         return None
         
+    def setCurrentFilePath(self, newPath):
+        if self.tabWidget.currentIndex() != -1:
+            self.tabData[self.tabWidget.currentIndex()][0] = newPath
+            self.tabWidget.setTabText(self.tabWidget.currentIndex(), f"{os.path.basename(newPath)}")
+        
     def setNote(self, newNote):
         if self.tabWidget.currentIndex() != -1:
             self.tabData[self.tabWidget.currentIndex()][3] = newNote
@@ -2150,10 +2155,10 @@ class MainWindow(QMainWindow):
         
         
     def saveArchive(self, initialdir: str | None = '', archive_file: str | None = ""):
-        if not initialdir:
-            initialdir = os.path.dirname(self.particleFilepath)
-        if not archive_file:
-            archive_file = QFileDialog.getSaveFileName(self, "Select archive", self.name)
+        saveAs = False
+        if not archive_file: # save-as operation
+            saveAs = True
+            archive_file = QFileDialog.getSaveFileName(self, "Select archive", self.particleFilepath)
             archive_file = archive_file[0]
         if not archive_file:
             return
@@ -2170,8 +2175,10 @@ class MainWindow(QMainWindow):
             #self.positionViewModel.writeFileData(data)
             #self.rotationViewModel.writeFileData(data)
             #f.write(data.data)
-
             self.statusBar().showMessage(f"Saved: {os.path.basename(archive_file)}", 5000)
+        if saveAs:
+            self.loadedFilesStrip.setCurrentFilePath(archive_file)
+            self.setLoadedFileLabels(archive_file)
             
     def saveSelectedFile(self):
         file = self.loadedFilesStrip.getSelectedFile()
