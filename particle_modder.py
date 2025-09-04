@@ -443,7 +443,7 @@ class ParticleEffect:
         self.variables.clear()
         self.particle_systems.clear()
         magic = stream.uint32_read()
-        if magic != 0x6E:
+        if magic not in [0x6E, 0x6D]:
             return
         self.min_lifetime = stream.float32_read()
         self.max_lifetime = stream.float32_read()
