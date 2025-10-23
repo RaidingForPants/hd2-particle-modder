@@ -2046,8 +2046,8 @@ class MainWindow(QMainWindow):
         self.opacityTab = QWidget(self.tabWidget)
         self.lifetimeTab = QWidget(self.tabWidget)
         self.sizeTab = QWidget(self.tabWidget)
-        self.positionTab = QWidget(self.tabWidget)
-        self.rotationTab = QWidget(self.tabWidget)
+        #self.positionTab = QWidget(self.tabWidget)
+        #self.rotationTab = QWidget(self.tabWidget)
         self.materialTab = QWidget(self.tabWidget)
 
     def initMenuBar(self):
