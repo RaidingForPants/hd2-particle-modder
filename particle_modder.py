@@ -478,6 +478,7 @@ class ParticleEffect:
             stream.advance(8)
             for particle_system in self.particle_systems:
                 particle_system.offset += 8
+            self.version = 0x6F
         for variable in self.variables:
             stream.write(struct.pack("<I", variable.name_hash))
         for variable in self.variables:
