@@ -1831,6 +1831,7 @@ class MainWindow(QMainWindow):
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
         self.fileSaveAsAction.triggered.connect(self.saveArchive)
+        self.fileSaveAllFilesAction.triggered.connect(self.saveProjectFiles)
         self.fileSaveArchiveAction.triggered.connect(self.saveSelectedFile)
         self.fileSaveProjectAction.triggered.connect(self.saveProject)
         self.fileLoadProjectAction.triggered.connect(self.loadProject)
@@ -2071,7 +2072,7 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.fileLoadProjectAction)
         self.file_menu.addAction(self.fileSaveArchiveAction)
         self.file_menu.addAction(self.fileSaveAsAction)
-        #self.file_menu.addAction(self.fileSaveAllFilesAction)
+        self.file_menu.addAction(self.fileSaveAllFilesAction)
         self.file_menu.addAction(self.fileSaveProjectAction)
         self.file_menu.addAction(self.fileCloseAction)
         self.file_menu.addAction(self.fileCloseAllAction)
