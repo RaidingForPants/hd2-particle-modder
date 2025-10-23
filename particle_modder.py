@@ -24,6 +24,8 @@ from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 VERSION = 2.0
+CURRENT_PARTICLE_EFFECT_VERSION = 0x6F
+VALID_PARTICLE_EFFECT_VERSIONS = [0x6F, 0x6E, 0x6D]
 
 def clear_layout(layout):
     if layout is not None:
@@ -294,38 +296,32 @@ class ParticleSystem:
         
         # get graphs/components
         while stream.tell() < self.offset + self.size:
+            # get component type
             component_type = stream.uint32_read()
             subtype = 0
-            if component_type in [0x05, 0x04, 0x0F]:
+            if component_type in [0x05, 0x04, 0x0F]: # graph, maybe. check subtype
                 subtype = stream.uint32_read()
                 if subtype < 0x20:
                     stream.advance(-4)
                     continue
                 else:
                     stream.advance(-8)
-            elif component_type == 0x00:
+            elif component_type == 0x00: # skip
                 continue
-            elif component_type == 0x11:
+            elif component_type == 0x11: # don't like this, but there doesn't seem to be a good way to handle this
                 if stream.tell() + 284 < self.offset + self.size:
                     stream.advance(284)
             elif component_type == 0x0B:
                 stream.advance(24)
                 continue
-            #elif component_type == 0x0D:
-            #    stream.advance(8)
-            #    continue
-            else:
+            else: # skip
                 continue
-            #while stream.uint32_read() == 0x00:
-            #    if stream.tell() == self.offset + self.size:
-            #        break
-            #stream.advance(-4)
             if stream.tell() + 16 > self.offset + self.size:
                 break
             component_type = [stream.uint32_read() for _ in range(4)]
             if component_type[0] == 0x04 and component_type[1] >= 0x20: # graph
                 stream.advance(4)
-                self.other_graph_offsets.append(stream.tell())
+                self.other_graph_offsets.append(stream.tell() - self.offset)
                 unk_graph = Graph()
                 unk_graph.from_memory_stream(stream)
                 unk_graph.from_memory_stream(stream)
@@ -334,7 +330,7 @@ class ParticleSystem:
             elif component_type[0] == 0x05 and component_type[1] >= 0x20: # color graph
                 # color graph
                 stream.advance(-4)
-                self.color_graph_offsets.append(stream.tell())
+                self.color_graph_offsets.append(stream.tell() - self.offset)
                 scale = Graph()
                 scale.from_memory_stream(stream)
                 scale.from_memory_stream(stream)
@@ -348,7 +344,7 @@ class ParticleSystem:
                 self.color_graphs.append(color)
                 stream.advance(16) # unknown data
             elif component_type[1] == 0x05 and component_type[2] >= 0x20: # color graph
-                self.color_graph_offsets.append(stream.tell())
+                self.color_graph_offsets.append(stream.tell() - self.offset)
                 scale = Graph()
                 scale.from_memory_stream(stream)
                 scale.from_memory_stream(stream)
@@ -363,7 +359,7 @@ class ParticleSystem:
                 stream.advance(16)
             elif component_type[0] == 0x0F and component_type[1] >= 0x20: # color graph, no scale
                 stream.advance(-4)
-                self.color_graph_offsets.append(stream.tell())
+                self.color_graph_offsets.append(stream.tell() - self.offset)
                 scale = None
                 #scale.from_memory_stream(stream)
                 #scale.from_memory_stream(stream)
@@ -410,7 +406,7 @@ class ParticleSystem:
         stream.seek(self.offset + self.visualizer_offset)
         self.visualizer.write_to_memory_stream(stream)
         for index, offset in enumerate(self.color_graph_offsets):
-            stream.seek(offset)
+            stream.seek(offset + self.offset)
             if self.scale_graphs[index] is not None:
                 self.scale_graphs[index].write_to_memory_stream(stream)
                 self.scale_graphs[index].write_to_memory_stream(stream)
@@ -418,7 +414,7 @@ class ParticleSystem:
             self.opacity_graphs[index].write_to_memory_stream(stream)
             self.color_graphs[index].write_to_memory_stream(stream)
         for index, offset in enumerate(self.other_graph_offsets):
-            stream.seek(offset)
+            stream.seek(offset + self.offset)
             self.other_graphs[index].write_to_memory_stream(stream)
             self.other_graphs[index].write_to_memory_stream(stream)
         
@@ -438,12 +434,13 @@ class ParticleEffect:
         self.max_lifetime = 0
         self.num_variables = 0
         self.num_particle_systems = 0
+        self.version = 0
         
     def from_memory_stream(self, stream):
         self.variables.clear()
         self.particle_systems.clear()
-        magic = stream.uint32_read()
-        if magic not in [0x6E, 0x6D]:
+        self.version = stream.uint32_read()
+        if self.version not in VALID_PARTICLE_EFFECT_VERSIONS:
             return
         self.min_lifetime = stream.float32_read()
         self.max_lifetime = stream.float32_read()
@@ -451,6 +448,8 @@ class ParticleEffect:
         self.num_variables = stream.uint32_read()
         self.num_particle_systems = stream.uint32_read()
         stream.advance(44)
+        if self.version == 0x6F:
+            stream.advance(8)
         for _ in range(self.num_variables):
             new_var = ParticleEffectVariable()
             new_var.name_hash = stream.uint32_read()
@@ -465,12 +464,20 @@ class ParticleEffect:
             self.particle_systems.append(new_system)
             
     def write_to_memory_stream(self, stream):
-        stream.seek(4)
+        stream.seek(0)
+        stream.write(struct.pack("<I", CURRENT_PARTICLE_EFFECT_VERSION))
         stream.write(struct.pack("<ff", self.min_lifetime, self.max_lifetime))
         stream.advance(8)
         stream.write(self.num_variables.to_bytes(4, byteorder="little"))
         stream.write(self.num_particle_systems.to_bytes(4, byteorder="little"))
-        stream.advance(44)
+        if self.version == 0x6F:
+            stream.advance(52)
+        else: # insert 8 bytes to match version 0x6F
+            stream.advance(44)
+            stream.data[stream.tell():stream.tell()] = bytearray(8)
+            stream.advance(8)
+            for particle_system in self.particle_systems:
+                particle_system.offset += 8
         for variable in self.variables:
             stream.write(struct.pack("<I", variable.name_hash))
         for variable in self.variables:

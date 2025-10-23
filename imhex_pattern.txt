@@ -331,7 +331,7 @@ struct ParticleEffect {
     u32 unk2;
     u32 numVariables;
     u32 numParticleSystems;
-    padding[44];
+    padding[52];
     count = 0;
     ParticleEffectVariable variables[numVariables];
     ParticleSystem particles[numParticleSystems];
