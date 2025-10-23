@@ -1,0 +1,342 @@
+#include <std/io>
+#include <std/core>
+
+using coloredVariable<T, auto colorStr> = T [[color(colorStr)]];
+
+struct GraphValue {
+    float value;
+    if (value == 10000) {
+        //continue;
+    }
+};
+
+struct Graph {
+    GraphValue xArray[10];
+    u32 xValues = std::core::member_count(xArray);
+    GraphValue yArray[xValues];
+} [[hex::visualize("scatter_plot", xArray, yArray)]];
+
+struct Rotation {
+    float xRow[3];
+    padding[4];
+    float yRow[3];
+    padding[4];
+    float zRow[3];
+    padding[4];
+    //u8 unk[16];
+};
+
+enum VisualizerType : u32 {
+    Billboard = 0x00,
+    Light = 0x01,
+    Mesh = 0x02,
+    Unknown3 = 0x03,
+    Unknown4 = 0x04
+};
+
+enum EmitterType : u32 {
+    Burst = 0x0C,
+    Rate = 0x0B,
+    unk0 = 0x1C,
+    unk1 = 0x03,
+    unk2 = 0x05,
+    unk3 = 0x19,
+    unk4 = 0x24
+};
+
+enum ComponentType : u32 {
+    Graph = 0x04,
+    ColorGraph = 0x05,
+    ColorGraphNoScale = 0x0F
+};
+
+struct BurstEmitterGraphPoint {
+    float time;
+    u32 minParticles;
+    u32 maxParticles;
+};
+
+struct BurstEmitterGraph {
+    BurstEmitterGraphPoint points[10];
+};
+
+struct BurstEmitter {
+    BurstEmitterGraph graph;
+    u32 unk1;
+    u32 unk2;
+    u32 unk3;
+} [[color("FF0000")]];
+
+struct RateEmitter {
+    float initialRateMin;
+    float initialRateMax;
+    Graph rateGraph[2];
+}[[color("00FF00")]];
+
+struct UnknownEmitter0 {
+    u32 unk1;
+    u32 unk2;
+    u32 unk3;
+    float unk4;
+    Graph emitterGraph[2];
+}[[color("0000FF")]];
+
+struct UnknownEmitter2 {
+    padding[176];
+};
+
+struct UnknownEmitter3 {
+    u32 unk1[4];
+    Graph emitterGraph[2];
+    u32 unk2[4];
+    float unk3[3];
+    //u32 unk4[3];
+}[[color("FF00FF")]];
+
+struct UnknownEmitter4 {
+    padding[248];
+};
+
+struct Emitter {
+    EmitterType emitterType;
+    if (emitterType == EmitterType::Burst){
+        BurstEmitter e;
+    } else if (emitterType == EmitterType::Rate){
+        RateEmitter e;
+    } else if (emitterType == EmitterType::unk0){
+        UnknownEmitter0 e;
+    } else if (emitterType == EmitterType::unk1){
+        u32 pad[4];
+    } else if (emitterType == EmitterType::unk2){
+        UnknownEmitter2 e;
+    } else if (emitterType == EmitterType::unk3){
+        UnknownEmitter3 e;
+    } else if (emitterType == EmitterType::unk4){
+        UnknownEmitter4 e;
+    }
+    if (std::mem::read_unsigned($, 4) == 0xFFFFFFFF) {
+        u32 end[2] [[hidden]];
+    } else {
+        
+    }
+};
+
+struct MeshVisualizer {
+    u64 unitID;
+    u64 meshID;
+    u64 materialID;
+    u32 visualizerData[56];
+};
+
+struct UnknownVisualizer4 {
+    u64 materialID;
+    u32 visualizerData[62];
+};
+struct UnknownVisualizer3 {
+    u32 data[2];
+    u64 materialID;
+    u32 visualizerData[58];
+};
+
+struct BillboardVisualizer {
+    u32 unk1;
+    u32 unk2;
+    u64 materialID;
+    u32 visualizerData[60];
+};
+
+struct LightVisualizer {
+    u32 visualizerData[64];
+};
+
+struct Visualizer {
+    //u32 unk;
+    VisualizerType type;
+    if (type == VisualizerType::Billboard){
+        BillboardVisualizer v;
+    } else if (type == VisualizerType::Light){
+        LightVisualizer v;
+    } else if (type == VisualizerType::Mesh){
+        MeshVisualizer v;
+    } else if (type == VisualizerType::Unknown4){
+        UnknownVisualizer4 v;
+    } else if (type == VisualizerType::Unknown3){
+        UnknownVisualizer3 v;
+    }
+};
+
+struct Color {
+    float r;
+    float g;
+    float b;
+};
+
+struct ColorGraph {
+    GraphValue xArray[10];
+    Color yArray[10];
+} [[hex::visualize("scatter_plot", xArray, yArray)]];
+
+struct ComponentList {
+    u32 size = parent.emitterOffset - parent.componentListOffset + 20;
+    u8 componentList[size];
+};
+
+struct GraphComponent {
+    u32 unk1[4];
+    Graph componentGraph[2];
+    u32 unk2[2];
+} [[color("00FFFF")]];
+
+struct ColorGraphComponent {
+    u32 unk1[2];
+    Graph scaleGraph[2] [[color("FF0000")]];
+    Graph opacityGraph[2] [[color("00FF00")]];
+    ColorGraph colorGraph [[color("0000FF")]];
+    u32 end[4] [[color("0000FF")]];
+};
+
+struct ColorGraphComponentNoScale {
+    u32 unk1[2];
+    Graph opacityGraph[2] [[color("00FF00")]];
+    ColorGraph colorGraph [[color("0000FF")]];
+    u32 end[4] [[color("0000FF")]];
+};
+
+struct PadComponent {
+    //padding[4];
+};
+
+struct BasicComponent {
+    padding[12];
+};
+
+struct FloatComponent {
+    u32 unk1[2];
+    float unk2[4];
+};
+
+fn valid_component_type(u32 component_type) {
+    if (component_type == 0x04) return 1;
+    if (component_type == 0x05) return 1;
+    if (component_type == 0x0F) return 1;
+    if (component_type == 0x0B) return 1;
+    return 0;
+};
+
+struct Component {
+    if (valid_component_type(std::mem::read_unsigned($, 4))){
+        ComponentType componentType;
+    } else{
+        u32 componentType [[hidden]];
+    }
+    if (componentType == 0x04 && std::mem::read_unsigned($, 1) >= 0x20){
+        GraphComponent c;
+    } else if (componentType == 0x05 && std::mem::read_unsigned($, 1) >= 0x20){
+        ColorGraphComponent c;
+    } else if (componentType == 0x0F && std::mem::read_unsigned($, 1) >= 0x20){
+        ColorGraphComponentNoScale c;
+    } else if (componentType == 0x0B){
+        FloatComponent c;
+    } else if (componentType == 0x00){
+        //pass
+    }else if (componentType == 0x11){
+        if ($ + 284 < parent.startOffset + parent.particleSystemSize) {
+            padding[284];
+        }
+    } else {
+        //BasicComponent c;
+    }
+};
+
+struct ParticleEffectVariable {
+    str color = "000000";
+    if (count % 3 == 0) {
+        color = "FF0000";
+    } else if (count % 3 == 1) {
+        color = "00FF00";
+    } else {
+        color = "0000FF";
+    }
+    coloredVariable<u32,color> nameHash;
+    u32 offset = $;
+    $ = $ + 4 * (parent.numVariables-count-1) + 12 * (count);
+    coloredVariable<float,color> x;
+    coloredVariable<float,color> y;
+    coloredVariable<float,color> z;
+    if (count < parent.numVariables-1) {
+        $ = offset + 4 * count;
+    }
+    count = count + 1;
+};
+
+struct ParticleSystem {
+    u32 startOffset = $;
+    u32 maxNumParticles;
+    u32 numComponents;
+    u32 unk2;
+    u32 componentBitFlags[numComponents];
+    padding[64-4*numComponents];
+    u32 unk3;
+    u32 unk4;
+    padding[8];
+    u32 unk5;
+    padding[4];
+    u32 unk6;
+    padding[4];
+    u32 type1;
+    u32 type2;
+    padding[4];
+    Rotation r;
+    float xOffset;
+    float yOffset;
+    float zOffset;
+    float unknownOffset;
+    float unknown[11];
+    u32 unk7;
+    u32 componentListOffset;
+    u32 unk8;
+    u32 emitterOffset;
+    u32 unk9;
+    u32 unk10;
+    u32 visualizerOffset;
+    u32 particleSystemSize;
+    if (visualizerOffset == particleSystemSize) {
+      $ = startOffset + particleSystemSize;
+      //trail spawner for another particle system???
+      continue;
+    }
+    
+    $ = startOffset + emitterOffset + 20;
+    Emitter emitters[while(std::mem::read_unsigned($, 4) != 0x01)];
+    
+    
+    $ = startOffset + componentListOffset;
+    if (unk3 == 0xFFFFFFFF) { //non-rendering particle system
+        $ = startOffset + particleSystemSize;
+        continue;
+    }
+    ComponentList componentList;
+    $ = startOffset + visualizerOffset;
+    Visualizer v;
+    Component components[while($ + 16 <= startOffset + particleSystemSize )];
+    $ = startOffset + particleSystemSize;
+    
+};
+
+struct ParticleEffect {
+    u32 magic;
+    u32 minLifetime;
+    u32 maxLifetime;
+    u32 unk1;
+    u32 unk2;
+    u32 numVariables;
+    u32 numParticleSystems;
+    padding[52];
+    count = 0;
+    ParticleEffectVariable variables[numVariables];
+    ParticleSystem particles[numParticleSystems];
+};
+
+u32 count;
+
+ParticleEffect pe @ 0x00;
