@@ -1825,8 +1825,8 @@ class MainWindow(QMainWindow):
         self.initOpacityView()
         self.initLifetimeView()
         self.initSizeView()
-        self.initPositionView()
-        self.initRotationView()
+        #self.initPositionView()
+        #self.initRotationView()
 
     def connectComponents(self):
         self.fileOpenArchiveAction.triggered.connect(self.load_archive)
@@ -1921,20 +1921,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.particleMaterialView)
         self.materialTab.setLayout(layout)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.positionView)
-        self.positionTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #layout.addWidget(self.positionView)
+        #self.positionTab.setLayout(layout)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.rotationView)
-        self.rotationTab.setLayout(layout)
+        #layout = QVBoxLayout()
+        #layout.addWidget(self.rotationView)
+        #self.rotationTab.setLayout(layout)
 
         self.tabWidget.addTab(self.colorTab, "Color")
         self.tabWidget.addTab(self.opacityTab, "Opacity")
+        self.tabWidget.addTab(self.sizeTab, "Intensity")
         self.tabWidget.addTab(self.lifetimeTab, "Lifetime")
-        self.tabWidget.addTab(self.sizeTab, "Size Scale")
-        self.tabWidget.addTab(self.positionTab, "Emitter Offset")
-        self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
+        #self.tabWidget.addTab(self.positionTab, "Emitter Offset")
+        #self.tabWidget.addTab(self.rotationTab, "Emitter Rotation")
         self.tabWidget.addTab(self.materialTab, "Visualizers")
 
         widget = QWidget()
