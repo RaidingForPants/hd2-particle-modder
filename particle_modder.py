@@ -1497,6 +1497,8 @@ class ColorTable(QTableView):
         self.contextMenuColorPickerAction.triggered.connect(self.showColorPicker)
         self.contextMenuHuePickerAction = QAction("Hue Picker")
         self.contextMenuHuePickerAction.triggered.connect(self.showHuePicker)
+        self.contextMenuMultiColorPickerAction = QAction("Color Picker")
+        self.contextMenuMultiColorPickerAction.triggered.connect(self.showMultiColorPicker)
         self.contextMenu = QMenu(self)
 
         # Add Ctrl+V shortcut
@@ -1515,13 +1517,28 @@ class ColorTable(QTableView):
         except:
             pass
             
+    def showMultiColorPicker(self, pos):
+        index = [i for i in self.selectedIndexes() if i.column() % 2 == 1][0]
+        colorTuple = ast.literal_eval(self.model().itemFromIndex(index).text())
+        color = QColor(*colorTuple)
+        selectedColor = QColorDialog.getColor(initial=color, parent=self, title="Select New Color")
+        hue = selectedColor.hue()
+        colors = [(QColor(*ast.literal_eval(self.model().itemFromIndex(i).text())), i) for i in self.selectedIndexes() if i.column() % 2 == 1]
+        for color, index in colors:
+            try:
+                color.setHsv(selectedColor.hue(), selectedColor.saturation(), selectedColor.value())
+                colorTuple = color.toRgb().toTuple()[0:3]
+                self.model().setData(index, str(colorTuple))
+            except:
+                pass
+            
     def showHuePicker(self, pos):
-        index = self.selectedIndexes()[0]
+        index = [i for i in self.selectedIndexes() if i.column() % 2 == 1][0]
         colorTuple = ast.literal_eval(self.model().itemFromIndex(index).text())
         color = QColor(*colorTuple)
         selectedColor = QColorDialog.getColor(initial=color, parent=self, title="Adjust color hue")
         hue = selectedColor.hue()
-        colors = [(QColor(*ast.literal_eval(self.model().itemFromIndex(i).text())), i) for i in self.selectedIndexes()]
+        colors = [(QColor(*ast.literal_eval(self.model().itemFromIndex(i).text())), i) for i in self.selectedIndexes() if i.column() % 2 == 1]
         for color, index in colors:
             try:
                 color.setHsv(hue, color.saturation(), color.value())
@@ -1531,29 +1548,27 @@ class ColorTable(QTableView):
                 pass
 
     def triggerColorPickerFromButton(self):
+        if not self.selectedIndexes():
+            return
+        validIndexes = [i for i in self.selectedIndexes() if i.column() % 2 == 1]
         selected = self.selectedIndexes()
-        if len(selected) != 1:
-            QMessageBox.warning(self, "Invalid Selection", "Please select one color cell.")
-            return
-        index = selected[0]
-        if index.column() % 2 == 0:
-            QMessageBox.warning(self, "Invalid Cell", "Please select a color cell (odd-numbered column).")
-            return
-        self.showColorPicker(None)  # We ignore 'pos' in showColorPicker anyway
+        if len(validIndexes) > 1:
+            self.showMultiColorPicker(None)
+        elif len(validIndexes) == 1:
+            self.showColorPicker(None)  # We ignore 'pos' in showColorPicker anyway
 
 
     def showContextMenu(self, pos):
         self.contextMenu.clear()
         if not self.selectedIndexes():
             return
-        if len(self.selectedIndexes()) > 1:
-            for index in self.selectedIndexes():
-                if not index.column() % 2 == 1:
-                    return
+        validIndexes = [i for i in self.selectedIndexes() if i.column() % 2 == 1]
+        if len(validIndexes) > 1:
             self.contextMenu.addAction(self.contextMenuHuePickerAction)
+            self.contextMenu.addAction(self.contextMenuMultiColorPickerAction)
             global_pos = self.mapToGlobal(pos)
             self.contextMenu.exec(global_pos)
-        elif self.selectedIndexes()[0].column() % 2 == 1:
+        elif len(validIndexes) == 1:
             self.contextMenu.addAction(self.contextMenuColorPickerAction)
             global_pos = self.mapToGlobal(pos)
             self.contextMenu.exec(global_pos)
