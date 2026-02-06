@@ -177,7 +177,7 @@ struct ColorGraph {
 } [[hex::visualize("scatter_plot", xArray, yArray)]];
 
 struct ComponentList {
-    u32 size = parent.emitterOffset - parent.componentListOffset + 20;
+    u32 size = parent.emitterOffset - parent.componentListOffset;
     u8 componentList[size];
 };
 
@@ -303,21 +303,24 @@ struct ParticleSystem {
     if (visualizerOffset == particleSystemSize) {
       $ = startOffset + particleSystemSize;
       //trail spawner for another particle system???
-      continue;
+      //continue;
     }
     
-    $ = startOffset + emitterOffset + 20;
-    Emitter emitters[while(std::mem::read_unsigned($, 4) != 0x01)];
-    
+    //$ = startOffset + emitterOffset + 20;
+    //Emitter emitters[while(std::mem::read_unsigned($, 4) != 0x01)];
+    $ = startOffset + emitterOffset;
+    u8 emitterData[visualizerOffset-emitterOffset];
     
     $ = startOffset + componentListOffset;
     if (unk3 == 0xFFFFFFFF) { //non-rendering particle system
-        $ = startOffset + particleSystemSize;
-        continue;
+        //$ = startOffset + particleSystemSize;
+        //continue;
     }
     ComponentList componentList;
     $ = startOffset + visualizerOffset;
-    Visualizer v;
+    if (visualizerOffset != particleSystemSize) {
+        Visualizer v;
+    }
     Component components[while($ + 16 <= startOffset + particleSystemSize )];
     $ = startOffset + particleSystemSize;
     
