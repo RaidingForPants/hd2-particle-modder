@@ -23,9 +23,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVB
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
-VERSION = 2.0
-CURRENT_PARTICLE_EFFECT_VERSION = 0x6F
-VALID_PARTICLE_EFFECT_VERSIONS = [0x6F, 0x6E, 0x6D]
+VERSION = 2.0.4
+CURRENT_PARTICLE_EFFECT_VERSION = 0x71
+VALID_PARTICLE_EFFECT_VERSIONS = [0x71, 0x6F, 0x6E, 0x6D]
 
 def clear_layout(layout):
     if layout is not None:
@@ -215,7 +215,8 @@ class Emitter:
         
 
 class ParticleSystem:
-    def __init__(self):
+    def __init__(self, version):
+        self.version = version
         self.scale_graphs = []
         self.opacity_graphs = []
         self.color_graphs = []
@@ -227,6 +228,8 @@ class ParticleSystem:
         self.visualizer = None
         self.offset = 0
         self.max_num_particles = 0
+        self.component_chunk = bytearray()
+        self.emitter_chunk = bytearray()
         
     def is_rendering(self):
         return self.non_rendering == 0
@@ -254,10 +257,14 @@ class ParticleSystem:
         self.unk3 = stream.read(52)
         self.component_list_offset = stream.uint32_read()
         self.unk4 = stream.read(4)
-        self.emitter_offset = stream.uint32_read() + 20
+        self.emitter_offset = stream.uint32_read()
         self.unk5 = stream.read(8)
         self.visualizer_offset = stream.uint32_read()
         self.size = stream.uint32_read()
+        stream.seek(self.offset + self.component_list_offset)
+        self.component_chunk = stream.read(self.emitter_offset - self.component_list_offset)
+        stream.seek(self.offset + self.emitter_offset)
+        self.emitter_chunk = stream.read(self.visualizer_offset-self.emitter_offset)
         if not self.is_rendering():
             stream.seek(self.offset + self.size)
             return
@@ -389,9 +396,15 @@ class ParticleSystem:
         stream.write(self.unk3)
         stream.write(struct.pack("<I", self.component_list_offset))
         stream.write(self.unk4)
-        stream.write(struct.pack("<I", self.emitter_offset-20))
+        stream.write(struct.pack("<I", self.emitter_offset))
         stream.write(self.unk5)
         stream.write(struct.pack("<II", self.visualizer_offset, self.size))
+        
+        stream.seek(self.offset + self.component_list_offset)
+        stream.write(self.component_chunk)
+        stream.seek(self.offset + self.emitter_offset)
+        stream.write(self.emitter_chunk)
+        
         if self.non_rendering != 0:
             stream.seek(self.offset + self.size)
             return
@@ -448,7 +461,7 @@ class ParticleEffect:
         self.num_variables = stream.uint32_read()
         self.num_particle_systems = stream.uint32_read()
         stream.advance(44)
-        if self.version == 0x6F:
+        if self.version in [0x6F, 0x71]:
             stream.advance(8)
         for _ in range(self.num_variables):
             new_var = ParticleEffectVariable()
@@ -459,7 +472,7 @@ class ParticleEffect:
             variable.y = stream.float32_read()
             variable.z = stream.float32_read()
         for _ in range(self.num_particle_systems):
-            new_system = ParticleSystem()
+            new_system = ParticleSystem(self.version)
             new_system.from_memory_stream(stream)
             self.particle_systems.append(new_system)
             
@@ -470,7 +483,7 @@ class ParticleEffect:
         stream.advance(8)
         stream.write(self.num_variables.to_bytes(4, byteorder="little"))
         stream.write(self.num_particle_systems.to_bytes(4, byteorder="little"))
-        if self.version == 0x6F:
+        if self.version in [0x6F, 0x71]:
             stream.advance(52)
         else: # insert 8 bytes to match version 0x6F
             stream.advance(44)
@@ -478,7 +491,6 @@ class ParticleEffect:
             stream.advance(8)
             for particle_system in self.particle_systems:
                 particle_system.offset += 8
-            self.version = 0x6F
         for variable in self.variables:
             stream.write(struct.pack("<I", variable.name_hash))
         for variable in self.variables:
@@ -486,6 +498,38 @@ class ParticleEffect:
         for particle_system in self.particle_systems:
             stream.seek(particle_system.offset)
             particle_system.write_to_memory_stream(stream)
+        if self.version != 0x71 and len(self.particle_systems) > 0:
+            updated_offset = 0
+            for particle_system in self.particle_systems:
+                if particle_system.is_rendering():
+                    offset = particle_system.offset + updated_offset + particle_system.emitter_offset - 16
+                    stream.seek(offset)
+                    value = stream.uint32_read()
+                    stream.seek(stream.tell()+12)
+                    if value == 8: # option 1. Insert 0x38 at the start. Find where 08 00 00 00 00 00 00 00 20 00 00 00 00 is and insert 0x30, 0x34, 0x38
+                        stream.seek(particle_system.offset + updated_offset + 0xFC)
+                        stream.write(struct.pack("<II", particle_system.visualizer_offset+16, particle_system.size+16))
+                        stream.seek(particle_system.offset + updated_offset + particle_system.emitter_offset + 8)
+                        stream.data[stream.tell():stream.tell()] = b'\xFF\xFF\xFF\xFF'
+                        
+                        replace_offset = stream.data.find(b'\x08\x00\x00\x00\x00\x00\x00\x00', particle_system.offset + particle_system.emitter_offset + updated_offset, particle_system.offset + particle_system.visualizer_offset + updated_offset)
+                        if replace_offset == -1:
+                            print("Error updating particle effect")
+                            return 1
+                        stream.seek(replace_offset + 8)
+                        replace_value = stream.uint32_read()
+                        stream.data[replace_offset+8:replace_offset+8] = struct.pack("<III", replace_value+0x10, replace_value+0x14, replace_value+0x18)
+                        updated_offset += 16
+                    else: # option 2: insert 0xFFFFFFFF at the start.
+                        stream.seek(particle_system.offset + updated_offset + 0xFC)
+                        stream.write(struct.pack("<II", particle_system.visualizer_offset+4, particle_system.size+4))
+                        stream.seek(particle_system.offset + updated_offset + particle_system.emitter_offset + 8)
+                        stream.data[stream.tell():stream.tell()] = b'\xFF\xFF\xFF\xFF'
+                        updated_offset += 4
+        if self.version != 0x71:
+            stream.seek(0)
+            self.from_memory_stream(stream)
+            self.version = 0x71
 
 class MemoryStream:
     '''
@@ -521,6 +565,12 @@ class MemoryStream:
 
     def tell(self): # Get Position In Stream
         return self.location
+        
+    def insert(self, length):
+        self.data[self.location:self.location] = bytearray(length)
+        
+    def delete(self, length):
+        self.data[self.location:self.location+length] = b''
 
     def read(self, length=-1): # read Bytes From Stream
         if length == -1:
