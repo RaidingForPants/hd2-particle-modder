@@ -23,9 +23,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVB
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
-VERSION = "2.0.4"
-CURRENT_PARTICLE_EFFECT_VERSION = 0x71
-VALID_PARTICLE_EFFECT_VERSIONS = [0x71, 0x6F, 0x6E, 0x6D]
+VERSION = "2.0.5"
+CURRENT_PARTICLE_EFFECT_VERSION = 0x72
+VALID_PARTICLE_EFFECT_VERSIONS = [0x72, 0x71, 0x6F, 0x6E, 0x6D]
 
 def clear_layout(layout):
     if layout is not None:
@@ -438,6 +438,9 @@ class ParticleEffectVariable:
         self.x = 0
         self.y = 0
         self.z = 0
+        
+class ParticleParseException(Exception):
+    pass
 
 class ParticleEffect:
     def __init__(self):
@@ -454,14 +457,20 @@ class ParticleEffect:
         self.particle_systems.clear()
         self.version = stream.uint32_read()
         if self.version not in VALID_PARTICLE_EFFECT_VERSIONS:
-            return
+            error_message_box = QMessageBox()
+            error_message_box.setText(f"Particle file version not recognized ({hex(self.version)}). Unable to load file.")
+            error_message_box.setWindowTitle(f"HD2 Particle Modder - Version {VERSION}")
+            error_message_box.setWindowIcon(QIcon("assets/icon.png"))
+            error_message_box.setIcon(QMessageBox.Icon.Critical)
+            error_message_box.exec()
+            raise ParticleParseException()
         self.min_lifetime = stream.float32_read()
         self.max_lifetime = stream.float32_read()
         stream.advance(8)
         self.num_variables = stream.uint32_read()
         self.num_particle_systems = stream.uint32_read()
         stream.advance(44)
-        if self.version in [0x6F, 0x71]:
+        if self.version in [0x6F, 0x71, 0x72]:
             stream.advance(8)
         for _ in range(self.num_variables):
             new_var = ParticleEffectVariable()
@@ -483,7 +492,7 @@ class ParticleEffect:
         stream.advance(8)
         stream.write(self.num_variables.to_bytes(4, byteorder="little"))
         stream.write(self.num_particle_systems.to_bytes(4, byteorder="little"))
-        if self.version in [0x6F, 0x71]:
+        if self.version in [0x6F, 0x71, 0x72]:
             stream.advance(52)
         else: # insert 8 bytes to match version 0x6F
             stream.advance(44)
@@ -498,7 +507,7 @@ class ParticleEffect:
         for particle_system in self.particle_systems:
             stream.seek(particle_system.offset)
             particle_system.write_to_memory_stream(stream)
-        if self.version != 0x71 and len(self.particle_systems) > 0:
+        if self.version < 0x71 and len(self.particle_systems) > 0:
             updated_offset = 0
             for particle_system in self.particle_systems:
                 if particle_system.is_rendering():
@@ -526,10 +535,10 @@ class ParticleEffect:
                         stream.seek(particle_system.offset + updated_offset + particle_system.emitter_offset + 8)
                         stream.data[stream.tell():stream.tell()] = b'\xFF\xFF\xFF\xFF'
                         updated_offset += 4
-        if self.version != 0x71:
+        if self.version != CURRENT_PARTICLE_EFFECT_VERSION:
             stream.seek(0)
             self.from_memory_stream(stream)
-            self.version = 0x71
+            self.version = CURRENT_PARTICLE_EFFECT_VERSION
 
 class MemoryStream:
     '''
@@ -2221,8 +2230,11 @@ class MainWindow(QMainWindow):
                 with open(filepath, 'rb') as f:
                     fileData = MemoryStream(f.read())
                 particleEffect = ParticleEffect()
-                particleEffect.from_memory_stream(fileData)
-                self.addLoadedFile(filepath, fileData, particleEffect, note)
+                try:
+                    particleEffect.from_memory_stream(fileData)
+                    self.addLoadedFile(filepath, fileData, particleEffect, note)
+                except ParticleParseException:
+                    pass
             break # support for multiple projects may be added later
             
     def closeAllFiles(self):
@@ -2248,10 +2260,13 @@ class MainWindow(QMainWindow):
         with open(archive_file, "rb") as f:
             self.particleEffectData = MemoryStream(f.read())
         self.particleEffect = ParticleEffect()
-        self.particleEffect.from_memory_stream(self.particleEffectData)
-        self.reloadData()
-        self.addLoadedFile(archive_file, self.particleEffectData, self.particleEffect)
-        self.setLoadedFileLabels(archive_file)
+        try:
+            self.particleEffect.from_memory_stream(self.particleEffectData)
+            self.reloadData()
+            self.addLoadedFile(archive_file, self.particleEffectData, self.particleEffect)
+            self.setLoadedFileLabels(archive_file)
+        except ParticleParseException:
+            pass
             
         #self.positionViewModel.setFileData(self.data)
         #self.rotationViewModel.setFileData(self.data)
