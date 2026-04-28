@@ -23,9 +23,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVB
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
-VERSION = "2.0.5"
-CURRENT_PARTICLE_EFFECT_VERSION = 0x72
-VALID_PARTICLE_EFFECT_VERSIONS = [0x72, 0x71, 0x6F, 0x6E, 0x6D]
+VERSION = "2.0.6"
+CURRENT_PARTICLE_EFFECT_VERSION = 0x73
+VALID_PARTICLE_EFFECT_VERSIONS = [0x73, 0x72, 0x71, 0x6F, 0x6E, 0x6D]
 
 def clear_layout(layout):
     if layout is not None:
@@ -492,7 +492,7 @@ class ParticleEffect:
         stream.advance(8)
         stream.write(self.num_variables.to_bytes(4, byteorder="little"))
         stream.write(self.num_particle_systems.to_bytes(4, byteorder="little"))
-        if self.version in [0x6F, 0x71, 0x72]:
+        if self.version in [0x6F, 0x71, 0x72, 0x73]:
             stream.advance(52)
         else: # insert 8 bytes to match version 0x6F
             stream.advance(44)
