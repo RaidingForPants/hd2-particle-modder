@@ -470,7 +470,7 @@ class ParticleEffect:
         self.num_variables = stream.uint32_read()
         self.num_particle_systems = stream.uint32_read()
         stream.advance(44)
-        if self.version in [0x6F, 0x71, 0x72]:
+        if self.version in [0x6F, 0x71, 0x72, 0x73]:
             stream.advance(8)
         for _ in range(self.num_variables):
             new_var = ParticleEffectVariable()
