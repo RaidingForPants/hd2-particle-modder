@@ -167,7 +167,7 @@ class Visualizer:
             data = struct.pack("<IIIQ", self.visualizer_type, self.unk1, self.unk2, self.material_id)
             stream.write(data)
         elif self.visualizer_type == Visualizer.LIGHT:
-            data = struct.pack("<I", self.visualizer_type) + self.data
+            data = struct.pack("<I", self.visualizer_type)
             stream.write(data)
         elif self.visualizer_type == Visualizer.MESH:
             data = struct.pack("<IQQQ", self.visualizer_type, self.unit_id, self.mesh_id, self.material_id)
