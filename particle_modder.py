@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVB
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
-VERSION = "2.0.7"
+VERSION = "2.0.9"
 CURRENT_PARTICLE_EFFECT_VERSION = 0x73
 VALID_PARTICLE_EFFECT_VERSIONS = [0x73, 0x72, 0x71, 0x6F, 0x6E, 0x6D]
 
