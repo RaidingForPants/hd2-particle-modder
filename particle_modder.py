@@ -187,16 +187,26 @@ class Visualizer:
         stream.seek(end)
         
 class Graph:
-    def __init__(self):
-        pass
+    def __init__(self, layers = 1):
+        self.num_layers = layers
+        self.extra_layers = []
         
     def from_memory_stream(self, stream):
         self.x = [stream.float32_read() for _ in range(10)]
         self.y = [stream.float32_read() for _ in range(10)]
+        for _ in range(self.num_layers - 1):
+            layer_x = [stream.float32_read() for _ in range(10)]
+            layer_y = [stream.float32_read() for _ in range(10)]
+            self.extra_layers.append((layer_x, layer_y))
+        
         
     def write_to_memory_stream(self, stream):
         stream.write(struct.pack("<ffffffffff", *self.x))
         stream.write(struct.pack("<ffffffffff", *self.y))
+        for i in range(self.num_layers - 1):
+            layer = self.extra_layers[i]
+            stream.write(struct.pack("<ffffffffff", *layer[0]))
+            stream.write(struct.pack("<ffffffffff", *layer[1]))
         
 class ColorGraph:
     def __init__(self):
@@ -371,8 +381,7 @@ class ParticleSystem:
             if component_type[0] == 0x04 and component_type[1] >= 0x20: # graph
                 stream.advance(4)
                 self.other_graph_offsets.append(stream.tell() - self.offset)
-                unk_graph = Graph()
-                unk_graph.from_memory_stream(stream)
+                unk_graph = Graph(2)
                 unk_graph.from_memory_stream(stream)
                 self.other_graphs.append(unk_graph)
                 stream.advance(8) # unknown data
@@ -380,12 +389,10 @@ class ParticleSystem:
                 # color graph
                 stream.advance(-4)
                 self.color_graph_offsets.append(stream.tell() - self.offset)
-                scale = Graph()
-                scale.from_memory_stream(stream)
+                scale = Graph(2)
                 scale.from_memory_stream(stream)
                 self.scale_graphs.append(scale)
-                opacity = Graph()
-                opacity.from_memory_stream(stream)
+                opacity = Graph(2)
                 opacity.from_memory_stream(stream)
                 self.opacity_graphs.append(opacity)
                 color = ColorGraph()
@@ -394,12 +401,10 @@ class ParticleSystem:
                 stream.advance(16) # unknown data
             elif component_type[1] == 0x05 and component_type[2] >= 0x20: # color graph
                 self.color_graph_offsets.append(stream.tell() - self.offset)
-                scale = Graph()
-                scale.from_memory_stream(stream)
+                scale = Graph(2)
                 scale.from_memory_stream(stream)
                 self.scale_graphs.append(scale)
-                opacity = Graph()
-                opacity.from_memory_stream(stream)
+                opacity = Graph(2)
                 opacity.from_memory_stream(stream)
                 self.opacity_graphs.append(opacity)
                 color = ColorGraph()
@@ -410,11 +415,8 @@ class ParticleSystem:
                 stream.advance(-4)
                 self.color_graph_offsets.append(stream.tell() - self.offset)
                 scale = None
-                #scale.from_memory_stream(stream)
-                #scale.from_memory_stream(stream)
                 self.scale_graphs.append(scale)
-                opacity = Graph()
-                opacity.from_memory_stream(stream)
+                opacity = Graph(2)
                 opacity.from_memory_stream(stream)
                 self.opacity_graphs.append(opacity)
                 color = ColorGraph()
@@ -464,13 +466,10 @@ class ParticleSystem:
             stream.seek(offset + self.offset)
             if self.scale_graphs[index] is not None:
                 self.scale_graphs[index].write_to_memory_stream(stream)
-                self.scale_graphs[index].write_to_memory_stream(stream)
-            self.opacity_graphs[index].write_to_memory_stream(stream)
             self.opacity_graphs[index].write_to_memory_stream(stream)
             self.color_graphs[index].write_to_memory_stream(stream)
         for index, offset in enumerate(self.other_graph_offsets):
             stream.seek(offset + self.offset)
-            self.other_graphs[index].write_to_memory_stream(stream)
             self.other_graphs[index].write_to_memory_stream(stream)
         
         
