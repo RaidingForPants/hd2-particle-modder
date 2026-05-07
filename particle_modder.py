@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QHBoxLayout, QVB
 from scipy.spatial.transform import Rotation
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
-VERSION = "2.0.9"
+VERSION = "2.0.10"
 CURRENT_PARTICLE_EFFECT_VERSION = 0x73
 VALID_PARTICLE_EFFECT_VERSIONS = [0x73, 0x72, 0x71, 0x6F, 0x6E, 0x6D]
 
@@ -150,8 +150,9 @@ class Visualizer:
             self.end = stream.tell()
         elif self.visualizer_type == Visualizer.UNKNOWN4:
             self.material_id = stream.uint64_read()
+            self.unk1 = stream.uint32_read()
             self.start = stream.tell()
-            self.data = stream.read(248)
+            self.data = stream.read(244)
             self.end = stream.tell()
         stream.seek(self.start)
         self.num_components = stream.uint32_read()
@@ -176,7 +177,7 @@ class Visualizer:
             data = struct.pack("<IIIQ", self.visualizer_type, self.unk1, self.unk2, self.material_id)
             stream.write(data)
         elif self.visualizer_type == Visualizer.UNKNOWN4:
-            data = struct.pack("<IQ", self.visualizer_type, self.material_id)
+            data = struct.pack("<IQI", self.visualizer_type, self.material_id, self.unk1)
             stream.write(data)
         start = stream.tell()
         stream.write(self.data)
